@@ -26,6 +26,7 @@ dependencies {
     implementation("org.json:json:20240303")
 
     testImplementation(kotlin("test"))
+    testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.10.2")
 }
 
 // Полезная нагрузка portable-сборки: jar приложения и его зависимости рядом,

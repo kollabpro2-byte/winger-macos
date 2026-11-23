@@ -107,6 +107,8 @@ fun toSingBox(xrayJson: String, opts: TunnelOptions = TunnelOptions()): String {
             blockQuic = isPostChunksOutbound(proxyOutbound),
         ),
     )
+    // Без валидного default_domain_resolver ядро 1.12+ не стартует.
+    ensureDomainResolver(sb)
     return sb.toString()
 }
 
@@ -140,9 +142,53 @@ private fun routeSection(
         .put("auto_detect_interface", true)
         .put("rules", routeRules(directDomains, subRules, blockQuic))
     if (ruleSets != null) route.put("rule_set", ruleSets)
-    if (!isIpLiteral(proxyServer)) route.put("default_domain_resolver", "bootstrap")
+    // default_domain_resolver выставляет ensureDomainResolver: он же проверяет,
+    // что тег реально есть в dns.servers (из подписки может не быть bootstrap).
     return route
 }
+
+/**
+ * Гарантирует `route.default_domain_resolver`, иначе ядро 1.12+ падает:
+ * «missing default_domain_resolver or domain_resolver in dial fields».
+ *
+ * Почему нельзя просто всегда писать "bootstrap": DNS-серверы могут прийти из
+ * подписки (`sub-dns-N`), и тогда ссылка на отсутствующий тег — такая же ошибка.
+ * Поэтому берём первый «прямой» сервер (без detour на прокси: им нельзя
+ * резолвить адрес самого прокси — получится петля), а если такого нет, добавляем
+ * собственный bootstrap.
+ */
+internal fun ensureDomainResolver(sb: JSONObject) {
+    val dns = sb.optJSONObject("dns") ?: JSONObject().also { sb.put("dns", it) }
+    val servers = dns.optJSONArray("servers") ?: JSONArray().also { dns.put("servers", it) }
+    val route = sb.optJSONObject("route") ?: JSONObject().also { sb.put("route", it) }
+
+    fun hasTag(tag: String): Boolean = (0 until servers.length()).any {
+        servers.optJSONObject(it)?.optString("tag") == tag
+    }
+
+    val current = route.optString("default_domain_resolver")
+    if (current.isNotBlank() && hasTag(current)) return
+
+    val directTypes = setOf("udp", "tcp", "tls", "https", "quic", "h3")
+    val direct = (0 until servers.length())
+        .mapNotNull { servers.optJSONObject(it) }
+        .firstOrNull { server ->
+            val tag = server.optString("tag")
+            tag.isNotBlank() &&
+                server.optString("type").lowercase() in directTypes &&
+                server.optString("detour") != "proxy"
+        }
+        ?.optString("tag")
+
+    val tag = direct ?: "bootstrap".also { if (!hasTag(it)) servers.put(bootstrapServer(it)) }
+    route.put("default_domain_resolver", tag)
+}
+
+/** Прямой UDP-резолвер без detour: нужен только для адресов прокси и DNS. */
+private fun bootstrapServer(tag: String): JSONObject = JSONObject()
+    .put("type", "udp")
+    .put("tag", tag)
+    .put("server", "1.1.1.1")
 
 private fun isIpLiteral(value: String): Boolean = value.matches(IPV4) || value.contains(':')
 

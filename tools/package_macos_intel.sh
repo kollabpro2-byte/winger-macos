@@ -30,10 +30,11 @@ fi
 
 # 3. Скелет бандла.
 rm -rf "$STAGE"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/app" "$APP/Contents/core" "$APP/Contents/jre"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/app" "$APP/Contents/core" "$APP/Contents/jre" "$APP/Contents/Resources"
 cp -R "$DESKTOP/build/portable/app/." "$APP/Contents/app/"
 cp -R "$JRE_SRC/." "$APP/Contents/jre/"
 cp "$DIST/mac-x64/sing-box" "$APP/Contents/core/sing-box"
+cp "$DESKTOP/icons/winger.icns" "$APP/Contents/Resources/AppIcon.icns"
 chmod +x "$APP/Contents/core/sing-box"
 
 # Skiko — нативная графика: в Intel-сборке нужен x64-рантайм, arm64 лишний.
@@ -62,6 +63,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleShortVersionString</key><string>1.0.75</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleExecutable</key><string>WingerVPN</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>11.0</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict>

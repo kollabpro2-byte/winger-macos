@@ -269,6 +269,15 @@ object Store {
     fun devicesOpen(): Boolean = getBool("devicesOpen", true)
     fun devicesOpen(on: Boolean) = put("devicesOpen", on.toString())
 
+    /**
+     * Версия правил выбора размера окна. 1 (старая) — «почти на весь экран»,
+     * 2 — «около 40% площади». Нужна, чтобы после обновления приложение один раз
+     * взяло новый дефолт, а не сохранённый огромный размер.
+     */
+    fun windowSizingVersion(): Int = getInt("windowSizing", 1)
+
+    fun windowSizingVersion(version: Int) = put("windowSizing", version.toString())
+
     /** Размер окна, если пользователь уже менял его вручную. */
     fun windowSize(): Pair<Int, Int>? {
         val w = getInt("windowW", 0)

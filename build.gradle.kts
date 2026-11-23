@@ -74,9 +74,12 @@ compose.desktop {
                 perUserInstall = true
                 // Стабильный UUID: обновление ставится поверх, а не рядом.
                 upgradeUuid = "6f1c9a52-4b8e-4b0a-9d7e-2d3f5a1c8e41"
+                // Иконка-орёл: тот же растр, что в интерфейсе (tools/make_icons.py).
+                iconFile.set(project.file("icons/winger.ico"))
             }
             macOS {
                 bundleID = "pro.wingerapp.vpn"
+                iconFile.set(project.file("icons/winger.icns"))
                 // Для локальной проверки на маке: gradle packageDmg.
                 // Приложение подписано ad-hoc, поэтому при первом запуске
                 // macOS попросит подтвердить открытие.

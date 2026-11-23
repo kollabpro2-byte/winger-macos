@@ -201,6 +201,15 @@ class AppViewModel {
         _state.value = SubscriptionState()
     }
 
+    /**
+     * Сбрасывает кэш пингов. Нужен при переключении туннеля: замеры, сделанные
+     * в момент, когда ядро ещё держало tun, показывают ~1 мс и не должны
+     * подмешиваться к честным числам ближайшие 5 минут.
+     */
+    fun clearPingCache() {
+        synchronized(pingCacheLock) { pingCache.clear() }
+    }
+
     /** Экран забрал запрос «включись сам» — второй раз он не сработает. */
     fun consumeAutoConnect() {
         _state.update { if (it.autoConnect) it.copy(autoConnect = false) else it }

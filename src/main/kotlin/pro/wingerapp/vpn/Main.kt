@@ -101,21 +101,26 @@ fun main() {
  * с пропорциями 9:19. Сохранённый пользователем размер имеет приоритет.
  */
 private fun applyWindowSize(window: java.awt.Window) {
-    val saved = Store.windowSize()
-    if (saved != null) {
-        window.setSize(saved.first, saved.second)
-        window.setLocationRelativeTo(null)
-        return
-    }
     val bounds = java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds
-    val height = (bounds.height * 0.92).toInt()
-    val width = if (bounds.width >= 1100) {
-        (bounds.width * 0.92).toInt()
-    } else {
-        (height * 0.47).toInt().coerceAtMost((bounds.width * 0.92).toInt())
+
+    // Сохранённый размер применяем только по новым правилам: иначе после
+    // обновления окно снова открылось бы «на весь экран».
+    if (Store.windowSizingVersion() >= 2) {
+        val saved = Store.windowSize()
+        if (saved != null) {
+            window.setSize(saved.first, saved.second)
+            window.setLocationRelativeTo(null)
+            return
+        }
     }
-    window.setSize(maxOf(width, 380), maxOf(height, 620))
+
+    // ~40% площади экрана: 0.63 от каждой стороны (0.63² ≈ 0.40).
+    val width = (bounds.width * 0.63).toInt().coerceIn(380, bounds.width)
+    val height = (bounds.height * 0.63).toInt().coerceIn(620, bounds.height)
+    window.setSize(width, height)
     window.setLocationRelativeTo(null)
+    Store.windowSize(width, height)
+    Store.windowSizingVersion(2)
 }
 
 @Composable

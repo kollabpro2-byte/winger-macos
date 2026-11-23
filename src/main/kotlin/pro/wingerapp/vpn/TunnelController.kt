@@ -74,7 +74,7 @@ object TunnelController {
      * Поднимает туннель. Ошибки (нет ядра, ядро отвергло конфиг) приводят к
      * понятному сообщению в UI, а не к «включено», которое ничего не делает.
      */
-    fun start(xrayJson: String) {
+    fun start(xrayJson: String, allowInstall: Boolean = true) {
         val gen = ++generation
         TunnelState.clearError()
         scope.launch {
@@ -88,7 +88,7 @@ object TunnelController {
                 // Если компонента ещё нет — ставим его прямо сейчас: один запрос
                 // пароля при первом включении, как у Happ/Incy. Отказ не мешает:
                 // ниже сработает обычный прокси-режим.
-                if (!usePrivileged() && Store.desktopTun() && PrivilegedTunnel.isSupported() &&
+                if (allowInstall && !usePrivileged() && Store.desktopTun() && PrivilegedTunnel.isSupported() &&
                     !PrivilegedTunnel.isInstalled()
                 ) {
                     VpnLog.add("первый запуск: установка системного режима")
@@ -174,7 +174,19 @@ object TunnelController {
             VpnLog.add("туннель уже работает в системном демоне")
             return
         }
-        start(config)
+
+        // Системный режим ещё не установлен: не поднимаем прокси молча — первое
+        // нажатие орла должно показать установку (один пароль) и включить tun.
+        if (!PrivilegedTunnel.isInstalled() && Store.desktopTun() && PrivilegedTunnel.isSupported()) {
+            Store.running(false)
+            TunnelState.off()
+            VpnLog.add("туннель не восстановлен: системный режим не установлен")
+            return
+        }
+
+        // Восстановление не должно внезапно спрашивать пароль: системный режим
+        // ставится только по явному нажатию орла.
+        start(config, allowInstall = false)
     }
 
     fun stop() {

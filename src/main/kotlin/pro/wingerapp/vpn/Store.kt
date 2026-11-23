@@ -238,7 +238,11 @@ object Store {
         }
         // Установленный системный компонент умеет tun сам — он и есть основной путь.
         if (PrivilegedTunnel.isInstalled()) return true
-        return getBool("desktopTun", Platform.isWindows || Platform.isMac)
+        // На десктопе tun — цель по умолчанию: если системный режим ещё не
+        // поставлен, приложение предложит его при первом включении. Сохранённое
+        // значение не учитываем: отдельного переключателя в интерфейсе нет, а
+        // старое false (из отладочных прогонов) блокировало установку.
+        return Platform.isWindows || Platform.isMac
     }
 
     fun desktopTun(on: Boolean) = put("desktopTun", on.toString())

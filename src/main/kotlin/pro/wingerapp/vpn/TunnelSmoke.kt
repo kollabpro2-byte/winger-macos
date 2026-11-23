@@ -16,7 +16,7 @@ object TunnelSmoke {
     fun enabled(): Boolean = System.getenv("WINGER_SMOKE") == "1"
 
     fun run(): Unit = runBlocking {
-        TunnelController.start(ConfigDump.DEMO_XRAY)
+        TunnelController.start(ConfigDump.DEMO_XRAY, allowInstall = false)
         delay(6_000)
 
         val alive = TunnelController.isRunning()

@@ -52,7 +52,7 @@ fun tcpPing(host: String, port: Int, attempts: Int = 2): Int? {
 fun coreDelay(
     proxyTag: String = "proxy",
     timeoutMs: Int = 3000,
-    url: String = "https://www.gstatic.com/generate_204",
+    url: String = "http://www.gstatic.com/generate_204",
 ): Int? = runCatching {
     val encoded = java.net.URLEncoder.encode(url, "UTF-8")
     val connection = (

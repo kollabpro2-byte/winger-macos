@@ -84,7 +84,7 @@ internal fun HomeTab(
     place: String, on: Boolean, pinging: Boolean, refreshing: Boolean, err: String?, notice: String?,
     noticeSeq: Int,
     trafficIntervalSec: Int,
-    raw: String, connect: (String) -> Unit, disconnect: () -> Unit, reload: (Boolean) -> Unit,
+    raw: String, connect: (String, String) -> Unit, disconnect: () -> Unit, reload: (Boolean) -> Unit,
     onSelect: (String) -> Unit, onToggle: () -> Unit,
     /** В широком окне бренд уже есть в сайдбаре — дублировать не нужно. */
     hideBrand: Boolean = false,

@@ -206,6 +206,9 @@ class AppViewModel {
      * в момент, когда ядро ещё держало tun, показывают ~1 мс и не должны
      * подмешиваться к честным числам ближайшие 5 минут.
      */
+    /** Сырая подписка: нужна для outbound'ов замера пинга. */
+    fun rawSubscription(): String = _state.value.raw
+
     fun clearPingCache() {
         synchronized(pingCacheLock) { pingCache.clear() }
     }
@@ -363,17 +366,33 @@ class AppViewModel {
 
     private suspend fun pingAll(parsed: SubConfig) {
         // Туннель включён: прямой TCP-пинг врёт (~1 мс, рукопожатие завершает
-        // локальный стек ядра). Честно измеряем только выбранный сервер —
-        // запросом через ядро; для остальных показываем «—», а не выдуманное 1.
+        // локальный стек ядра). Как в Happ/Incy, просим задержку у самого ядра
+        // для КАЖДОГО сервера: в конфиге на них заведены отдельные outbound'ы,
+        // а Clash API меряет реальный запрос через нужный сервер.
         if (TunnelState.running.value) {
-            val selected = _state.value.selected
-            val delay = withContext(Dispatchers.IO) { runCatching { coreDelay() }.getOrNull() }
-            _state.update { state ->
-                state.copy(pings = parsed.servers.associate { node ->
-                    node.name to if (node.name == selected) delay else null
-                })
+            // Ядро после старта догружает rule-set'ы, и первые замеры могут не
+            // пройти вовсе. Тогда ждём и повторяем: иначе «нет» висело бы до
+            // следующего обновления через 5 минут.
+            val gate = Semaphore(4)
+            var result: Map<String, Int?> = emptyMap()
+            for (attempt in 1..3) {
+                result = coroutineScope {
+                    parsed.servers.map { node ->
+                        async(Dispatchers.IO) {
+                            val tag = TunnelController.pingTag(node.name)
+                                ?: return@async node.name to null
+                            node.name to gate.withPermit {
+                                runCatching { coreDelay(proxyTag = tag, timeoutMs = 3000) }.getOrNull()
+                            }
+                        }
+                    }.awaitAll()
+                }.toMap()
+                if (result.values.any { it != null }) break
+                if (attempt < 3) delay(2_000)
             }
-            VpnLog.add("пинг через туннель: ${delay?.let { "$it мс" } ?: "нет ответа"}")
+            _state.update { it.copy(pings = result) }
+            val known = result.values.count { it != null }
+            VpnLog.add("пинг через ядро: $known из ${parsed.servers.size} серверов ответили")
             return
         }
 

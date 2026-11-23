@@ -86,7 +86,7 @@ object Snapshot {
             vm = vm,
             // Пустой hwid: сетевые запросы в режиме снимка не нужны.
             hwid = "",
-            connect = {},
+            connect = { _, _ -> },
             disconnect = {},
             onLogout = {},
         )

@@ -41,7 +41,7 @@ import pro.wingerapp.vpn.net.*
 fun HomeScreen(
     vm: AppViewModel,
     hwid: String,
-    connect: (String) -> Unit,
+    connect: (String, String) -> Unit,
     disconnect: () -> Unit,
     onLogout: () -> Unit,
 ) {
@@ -85,6 +85,18 @@ fun HomeScreen(
     // Пинги считаем по уже загруженному списку, без обращения к панели:
     // при включённом туннеле — только выбранный сервер (через ядро), при
     // выключенном — все. Раз в 5 минут обновляем, чтобы числа не застывали.
+    // Туннель мог быть поднят конфигом без outbound'ов замера (старая версия):
+    // как только подписка доступна — пересобираем конфиг, иначе пинг «нет» у всех.
+    LaunchedEffect(st.raw.isNotBlank(), on) {
+        if (on && st.raw.isNotBlank() && TunnelController.pingTagCount() == 0) {
+            vm.config()?.let { connect(it, vm.rawSubscription()) }
+            // Даём ядру перезапуститься и сразу пересчитываем пинги уже по тегам.
+            kotlinx.coroutines.delay(2_500)
+            vm.clearPingCache()
+            vm.refreshPings()
+        }
+    }
+
     // Ключ включает число серверов: подписка приходит асинхронно, и первый
     // запуск эффекта мог случиться до её загрузки (тогда пинги не считались).
     LaunchedEffect(on, st.servers.size) {
@@ -121,7 +133,7 @@ fun HomeScreen(
             // Пауза: пользователь успевает увидеть выключенную кнопку без орла,
             // а затем орёл опускается и ободок загорается.
             delay(450)
-            connect(config)
+            connect(config, vm.rawSubscription())
         }
         // Гасим флаг последним: его изменение перезапустит эффект, и если бы мы
         // сделали это раньше, корутина отменилась бы до вызова connect().
@@ -153,7 +165,7 @@ fun HomeScreen(
                 reload = { ping -> vm.refresh(ping) },
                 onSelect = { name ->
                     vm.select(name)
-                    vm.config(name)?.let(connect)
+                    vm.config(name)?.let { connect(it, vm.rawSubscription()) }
                 },
                 hideBrand = wide,
                 onToggle = {
@@ -165,7 +177,7 @@ fun HomeScreen(
                         disconnect()
                     } else {
                         val config = vm.config()
-                        if (config != null) connect(config)
+                        if (config != null) connect(config, vm.rawSubscription())
                         else vm.fail(s[R.string.home_select_server_first])
                     }
                 },
@@ -173,7 +185,7 @@ fun HomeScreen(
             1 -> AccountTab(hwid, onLogout = { onLogout(); vm.logout() }) { chat = true }
             2 -> SettingsTab {
                 // Settings only reach the core through the config: rebuild it.
-                if (on) vm.config()?.let(connect)
+                if (on) vm.config()?.let { connect(it, vm.rawSubscription()) }
             }
         }
     }

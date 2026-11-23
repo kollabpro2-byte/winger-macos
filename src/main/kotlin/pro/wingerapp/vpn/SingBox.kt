@@ -259,6 +259,47 @@ private fun coreLog(path: String?): JSONObject =
     if (path.isNullOrBlank()) JSONObject().put("disabled", true)
     else JSONObject().put("level", "debug").put("output", path).put("timestamp", true)
 
+/**
+ * Дополнительные outbound'ы для замера задержки — по одному на каждый сервер
+ * подписки (кроме выбранного, у него уже есть тег `proxy`).
+ *
+ * Маршрутизация их не использует: они нужны только Clash API
+ * (`/proxies/{tag}/delay`), чтобы показывать реальный пинг у ВСЕХ серверов,
+ * как Happ/Incy. Транспорт собирается в минимальном виде: один неизвестный
+ * ключ XHTTP уронил бы ядро на старте всего конфига.
+ */
+internal fun measurementOutbounds(
+    rawSubscription: String,
+    selected: String,
+    opts: TunnelOptions,
+): Pair<JSONArray, Map<String, String>> {
+    val out = JSONArray()
+    val tags = LinkedHashMap<String, String>()
+    val configs = runCatching { JSONArray(rawSubscription) }.getOrNull() ?: return out to tags
+    var index = 0
+    for (i in 0 until configs.length()) {
+        val cfg = configs.optJSONObject(i) ?: continue
+        val name = cfg.optString("remarks")
+        if (name.isBlank() || name == selected) continue
+        val proxy = firstVless(cfg.optJSONArray("outbounds") ?: continue) ?: continue
+        val tag = "ping-$index"
+        val converted = runCatching {
+            // Транспорт собираем так же, как у рабочего прокси: у части
+            // серверов (XHTTP-релей) обязательны свои заголовки padding/seq,
+            // без них замер получает отказ, хотя обычный запуск работает.
+            convertVless(
+                proxy, opts.useMux, opts.minimalTransport,
+                dropXhttpFields = opts.dropXhttpFields, ipv6Proxy = opts.ipv6Proxy,
+                shimPort = opts.shimPort, tag = tag,
+            )
+        }.getOrNull() ?: continue
+        index++
+        out.put(converted)
+        tags[name] = tag
+    }
+    return out to tags
+}
+
 private fun firstVless(obs: JSONArray): JSONObject? {
     for (i in 0 until obs.length()) {
         val o = obs.optJSONObject(i) ?: continue

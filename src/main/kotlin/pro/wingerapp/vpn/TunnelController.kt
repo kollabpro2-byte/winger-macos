@@ -39,6 +39,19 @@ object TunnelController {
     @Volatile
     private var privilegedActive = false
 
+    /**
+     * Имя сервера → тег outbound'а в текущем конфиге. По этой карте UI просит
+     * у ядра задержку каждого сервера (Clash API), как это делают Happ/Incy.
+     */
+    @Volatile
+    private var pingTags: Map<String, String> = emptyMap()
+
+    /** Сколько серверов сейчас имеют outbound для замера (0 — конфиг без них). */
+    fun pingTagCount(): Int = pingTags.size
+
+    /** Тег outbound'а для замера пинга конкретного сервера. */
+    fun pingTag(serverName: String): String? = pingTags[serverName]
+
     /** Номер попытки: поздние колбэки старой сессии не должны трогать новую. */
     @Volatile
     private var generation = 0
@@ -74,7 +87,7 @@ object TunnelController {
      * Поднимает туннель. Ошибки (нет ядра, ядро отвергло конфиг) приводят к
      * понятному сообщению в UI, а не к «включено», которое ничего не делает.
      */
-    fun start(xrayJson: String, allowInstall: Boolean = true) {
+    fun start(xrayJson: String, rawSubscription: String = "", allowInstall: Boolean = true) {
         val gen = ++generation
         TunnelState.clearError()
         scope.launch {
@@ -101,7 +114,7 @@ object TunnelController {
                 }
 
                 if (usePrivileged()) {
-                    startPrivileged(xrayJson, gen)
+                    startPrivileged(xrayJson, rawSubscription, gen)
                     return@launch
                 }
 
@@ -113,7 +126,7 @@ object TunnelController {
 
                 val shimPort = startShim()
                 val tun = processTun()
-                val config = coreConfig(xrayJson, shimPort, tun)
+                val config = coreConfig(xrayJson, shimPort, tun, raw = rawSubscription)
                 val path = Platform.file("core.json")
                 path.writeText(config)
                 VpnLog.add(
@@ -130,6 +143,7 @@ object TunnelController {
                 pipeOutput(process, gen)
                 Store.running(true)
                 Store.lastConfig(xrayJson)
+                if (rawSubscription.isNotBlank()) Store.lastRaw(rawSubscription)
                 TunnelState.serviceAlive = true
                 TunnelState.on()
                 CoreTraffic.reset()
@@ -185,8 +199,9 @@ object TunnelController {
         }
 
         // Восстановление не должно внезапно спрашивать пароль: системный режим
-        // ставится только по явному нажатию орла.
-        start(config, allowInstall = false)
+        // ставится только по явному нажатию орла. Подписку передаём целиком —
+        // без неё в конфиге не будет outbound'ов для пинга остальных серверов.
+        start(config, Store.lastRaw(), allowInstall = false)
     }
 
     fun stop() {
@@ -305,7 +320,7 @@ object TunnelController {
      * Локальная прослойка LTE4 остаётся в нашем процессе: ядро от root
      * подключается к 127.0.0.1:<порт> так же, как обычное приложение.
      */
-    private suspend fun startPrivileged(xrayJson: String, gen: Int) {
+    private suspend fun startPrivileged(xrayJson: String, raw: String, gen: Int) {
         // Права на файл состояния могли остаться от старой версии установщика
         // (файл создан root'ом). Тогда переустанавливаем компонент — один пароль.
         if (!PrivilegedTunnel.canControl()) {
@@ -320,7 +335,11 @@ object TunnelController {
         }
 
         val shimPort = startShim()
-        val config = coreConfig(xrayJson, shimPort, useTun = true, privileged = true)
+        val config = coreConfig(
+            xrayJson, shimPort, useTun = true, privileged = true,
+            raw = raw.ifBlank { Store.lastRaw() },
+        )
+        if (raw.isNotBlank()) Store.lastRaw(raw)
         PrivilegedTunnel.configFile.writeText(config)
         // Гасим и поднимаем заново: демон держит уже запущенное ядро и сам
         // конфиг не перечитывает, иначе остался бы старый сервер.
@@ -363,7 +382,13 @@ object TunnelController {
      * Конфиг ядра: сначала полноценный тун (весь трафик системы), при отсутствии
      * прав — локальный прокси, чтобы приложение всё же работало.
      */
-    internal fun coreConfig(xrayJson: String, shimPort: Int, useTun: Boolean, privileged: Boolean = false): String {
+    internal fun coreConfig(
+        xrayJson: String,
+        shimPort: Int,
+        useTun: Boolean,
+        privileged: Boolean = false,
+        raw: String = "",
+    ): String {
         val options = TunnelOptions(
             dnsServer = Store.dnsServer(),
             directDomains = Store.bypass(),
@@ -377,6 +402,19 @@ object TunnelController {
         )
         val base = JSONObject(toSingBox(xrayJson, options))
         base.put("inbounds", org.json.JSONArray().put(inbound(useTun)))
+
+        // По одному outbound'у на каждый сервер — только ради замеров через
+        // Clash API. Выбранный сервер уже идёт под тегом proxy.
+        val selectedName = runCatching { JSONObject(xrayJson).optString("remarks") }.getOrDefault("")
+        if (raw.isNotBlank()) {
+            val (extra, tags) = measurementOutbounds(raw, selectedName, options)
+            val outbounds = base.getJSONArray("outbounds")
+            for (i in 0 until extra.length()) outbounds.put(extra.getJSONObject(i))
+            pingTags = if (selectedName.isBlank()) tags else tags + (selectedName to "proxy")
+            VpnLog.add("пинг: outbound'ов замера ${extra.length()}")
+        } else {
+            pingTags = emptyMap()
+        }
         base.put(
             "experimental",
             JSONObject().put(

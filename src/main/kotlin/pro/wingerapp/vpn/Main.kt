@@ -47,6 +47,11 @@ fun main() {
         ConfigDump.run(System.getenv("WINGER_DUMP_CONFIG")!!)
         return
     }
+    // Проверка пинга на реальной подписке: WINGER_SMOKE_PING=1 ./gradlew run
+    if (PingSmoke.enabled()) {
+        PingSmoke.run()
+        return
+    }
     // Дымовой тест туннеля: WINGER_SMOKE=1 ./gradlew run
     if (TunnelSmoke.enabled()) {
         TunnelSmoke.run()
@@ -145,7 +150,7 @@ private fun Root(vm: AppViewModel, hwid: String) {
             else -> HomeScreen(
                 vm = vm,
                 hwid = hwid,
-                connect = { config -> TunnelController.start(config) },
+                connect = { config, raw -> TunnelController.start(config, raw) },
                 disconnect = { TunnelController.stop() },
                 onLogout = {
                     TunnelController.stop()

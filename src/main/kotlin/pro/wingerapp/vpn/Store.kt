@@ -167,6 +167,11 @@ object Store {
     fun running(): Boolean = getBool("running", false)
     fun running(on: Boolean) = put("running", on.toString())
 
+    /** Вся подписка: из неё строятся outbound'ы для пинга всех серверов. */
+    fun lastRaw(): String = secretGet("lastRaw")
+
+    fun lastRaw(raw: String) = secretPut("lastRaw", raw)
+
     fun lastConfig(): String = secretGet("lastConfig")
     fun lastConfig(json: String) = secretPut("lastConfig", json)
     fun clearLastConfig() = secretRemove("lastConfig")

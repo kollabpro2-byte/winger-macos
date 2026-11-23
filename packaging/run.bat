@@ -11,4 +11,4 @@ if errorlevel 1 (
 )
 
 set "WINGER_CORE=%~dp0core\sing-box.exe"
-start "" "%~dp0jre\bin\javaw.exe" -cp "%~dp0app\app.jar;%~dp0app\lib\*" pro.wingerapp.vpn.MainKt
+start "" "%~dp0jre\bin\javaw.exe" -cp "%~dp0lib\*" pro.wingerapp.vpn.MainKt

@@ -5,6 +5,15 @@ plugins {
     kotlin("jvm") version "2.0.21"
     id("org.jetbrains.kotlin.plugin.compose") version "2.0.21"
     id("org.jetbrains.compose") version "1.7.3"
+    // .exe-лаунчер для Windows: собирается на macOS (jpackage так не умеет).
+    id("edu.sc.seis.launch4j") version "3.0.6"
+}
+
+// Плагин launch4j добавляет свой репозиторий, поэтому режим PREFER_PROJECT
+// в settings.gradle.kts: здесь перечисляем всё, что нужно сборке.
+repositories {
+    mavenCentral()
+    google()
 }
 
 group = "pro.wingerapp"
@@ -40,9 +49,48 @@ tasks.register<Sync>("portablePayload") {
     from(configurations.runtimeClasspath) { into("app/lib") }
 }
 
+tasks.register<Jar>("exeJar") {
+    archiveFileName.set("winger-app.jar")
+    manifest {
+        attributes(
+            mapOf(
+                "Main-Class" to "pro.wingerapp.vpn.MainKt",
+                // Пути относительно папки с exe: рядом лежит lib/.
+                "Class-Path" to configurations.runtimeClasspath.get()
+                    .joinToString(" ") { "lib/${it.name}" },
+            ),
+        )
+    }
+    from(sourceSets.main.get().output)
+}
+
+// Настоящий Windows-лаунчер (.exe) — Launch4j собирает его на macOS.
+launch4j {
+    outfile.set("WingerVPN.exe")
+    // У расширения плагина это метод Groovy-стиля, не property.
+    setJarTask(tasks.named("exeJar").get())
+    mainClassName.set("pro.wingerapp.vpn.MainKt")
+    icon.set(project.file("icons/winger.ico").absolutePath)
+    bundledJrePath.set("jre")
+    jreMinVersion.set("21")
+    // Нативный 64-битный стаб: приложение всё равно требует x64 JRE.
+    setRuntimeBits("64")
+    headerType.set("gui")
+    windowTitle.set("Winger VPN")
+    productName.set("Winger VPN")
+    companyName.set("Winger")
+    fileDescription.set("Winger VPN")
+    internalName.set("WingerVPN")
+    version.set("0.1.75.0")
+    textVersion.set("0.1.75")
+}
+
 tasks.test {
     useJUnitPlatform()
 }
+
+// createExe не знает про наш jar — связываем явно.
+tasks.named("createExe") { dependsOn("exeJar") }
 
 compose.desktop {
     application {

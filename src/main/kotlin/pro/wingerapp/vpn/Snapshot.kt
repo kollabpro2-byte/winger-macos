@@ -48,6 +48,11 @@ object Snapshot {
                 render(File(dir, "settings-$mode.png")) {
                     pro.wingerapp.vpn.ui.SettingsTab(onApply = {})
                 }
+                // Широкое окно: проверяем десктопный layout с сайдбаром.
+                render(
+                    File(dir, "home-wide-$mode.png"),
+                    width = 1600, height = 1000, density = 1.5f,
+                ) { demoHome(on = true) }
             }
         }
         AppTheme.mode = AppTheme.fromStored(Store.themeMode())
@@ -96,11 +101,17 @@ object Snapshot {
     )
 
     /** 420×900 dp при плотности 2 — те же пропорции, что у окна и телефона. */
-    private fun render(target: File, content: @androidx.compose.runtime.Composable () -> Unit) {
+    private fun render(
+        target: File,
+        width: Int = 840,
+        height: Int = 1800,
+        density: Float = 2f,
+        content: @androidx.compose.runtime.Composable () -> Unit,
+    ) {
         val scene = ImageComposeScene(
-            width = 840,
-            height = 1800,
-            density = Density(2f),
+            width = width,
+            height = height,
+            density = Density(density),
         ) {
             WingerFonts { content() }
         }

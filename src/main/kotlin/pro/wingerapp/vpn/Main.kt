@@ -1,6 +1,7 @@
 package pro.wingerapp.vpn
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -74,10 +75,47 @@ fun main() {
             title = "Winger VPN",
             state = state,
         ) {
-            window.minimumSize = Dimension(360, 640)
+            window.minimumSize = Dimension(380, 620)
+            LaunchedEffect(Unit) { applyWindowSize(window) }
+            // Размер запоминаем по факту изменения: обработчик закрытия окна
+            // выполняется вне области видимости `window`.
+            DisposableEffect(window) {
+                val listener = object : java.awt.event.ComponentAdapter() {
+                    override fun componentResized(e: java.awt.event.ComponentEvent) {
+                        runCatching { Store.windowSize(window.width, window.height) }
+                    }
+                }
+                window.addComponentListener(listener)
+                onDispose { window.removeComponentListener(listener) }
+            }
             Root(vm, hwid)
         }
     }
+}
+
+/**
+ * Размер окна под экран.
+ *
+ * Как у Happ/Incy: на большом экране окно занимает почти всё место (тогда
+ * интерфейс переключается на сайдбар), на узком — телефонная колонка
+ * с пропорциями 9:19. Сохранённый пользователем размер имеет приоритет.
+ */
+private fun applyWindowSize(window: java.awt.Window) {
+    val saved = Store.windowSize()
+    if (saved != null) {
+        window.setSize(saved.first, saved.second)
+        window.setLocationRelativeTo(null)
+        return
+    }
+    val bounds = java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds
+    val height = (bounds.height * 0.92).toInt()
+    val width = if (bounds.width >= 1100) {
+        (bounds.width * 0.92).toInt()
+    } else {
+        (height * 0.47).toInt().coerceAtMost((bounds.width * 0.92).toInt())
+    }
+    window.setSize(maxOf(width, 380), maxOf(height, 620))
+    window.setLocationRelativeTo(null)
 }
 
 @Composable

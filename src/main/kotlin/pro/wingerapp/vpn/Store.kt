@@ -268,4 +268,16 @@ object Store {
 
     fun devicesOpen(): Boolean = getBool("devicesOpen", true)
     fun devicesOpen(on: Boolean) = put("devicesOpen", on.toString())
+
+    /** Размер окна, если пользователь уже менял его вручную. */
+    fun windowSize(): Pair<Int, Int>? {
+        val w = getInt("windowW", 0)
+        val h = getInt("windowH", 0)
+        return if (w >= 360 && h >= 480) w to h else null
+    }
+
+    fun windowSize(width: Int, height: Int) {
+        put("windowW", width.toString())
+        put("windowH", height.toString())
+    }
 }

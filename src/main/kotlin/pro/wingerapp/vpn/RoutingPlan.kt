@@ -47,7 +47,7 @@ internal object RoutingPlan {
             val rule = xrules.optJSONObject(i) ?: continue
             convertRule(rule, rules, ruleSets, seenSets, skipped)
         }
-        val dns = convertDns(xray.optJSONObject("dns"), skipped)
+        val dns = convertDns(xray.optJSONObject("dns"), skipped, ruleSets, seenSets)
         if (rules.length() == 0 && dns == null) return null
         return Plan(rules, dns, if (ruleSets.length() > 0) ruleSets else null, skipped.distinct())
     }
@@ -65,7 +65,9 @@ internal object RoutingPlan {
         // Правило без цели бессмысленно; dns-out и block — это не outbound'ы.
         if (target.isBlank()) return
         if (xray.has("inboundTag")) {
-            skipped += "inboundTag"
+            // Правило привязано к входящему тегу Xray (api/dns-in). У нас один
+            // вход tun-in, поэтому правило неприменимо — это нормальный пропуск,
+            // а не потеря; в счётчик «не перенесено» его не добавляем.
             return
         }
         if (target == "dns-out") {
@@ -244,7 +246,12 @@ internal object RoutingPlan {
 
     // -------------------------------------------------------------------- DNS
 
-    private fun convertDns(dns: JSONObject?, skipped: MutableList<String>): JSONObject? {
+    private fun convertDns(
+        dns: JSONObject?,
+        skipped: MutableList<String>,
+        ruleSets: JSONArray,
+        seenSets: MutableSet<String>,
+    ): JSONObject? {
         if (dns == null) return null
         val xservers = dns.optJSONArray("servers") ?: return null
 
@@ -272,7 +279,15 @@ internal object RoutingPlan {
             servers.put(entry)
 
             val matchers = JSONObject()
-            if (domainMatchers(s.optJSONArray("domains"), matchers, skipped)) {
+            val sets = JSONArray()
+            val hasDomains = domainMatchers(
+                s.optJSONArray("domains"), matchers, skipped, sets, ruleSets, seenSets,
+            )
+            // geosite-скоупы («apple», «category-ru») переводим в rule_set: ядро
+            // скачает набор и будет резолвить эти домены тем сервером, который
+            // задумал автор подписки.
+            if (sets.length() > 0) matchers.put("rule_set", sets)
+            if (hasDomains || sets.length() > 0) {
                 // Правило DNS: этим доменам — этот сервер.
                 rules.put(JSONObject(matchers.toString()).put("server", tag))
             } else if (finalTag == null) {

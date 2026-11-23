@@ -39,7 +39,8 @@ class DomainResolverTest {
           ],
           "dns": {
             "servers": [
-              { "address": "https://dns.google/dns-query", "domains": ["geosite:google"] }
+              { "address": "https://dns.google/dns-query", "domains": ["geosite:google"] },
+              { "address": "https://common.dot.dns.yandex.net", "domains": ["geosite:apple"] }
             ]
           },
           "routing": {
@@ -84,5 +85,18 @@ class DomainResolverTest {
                 "rule-set должен качаться через http_client.detour=proxy",
             )
         }
+
+        // geosite-скоупы DNS-серверов подписки должны стать dns.rules с rule_set,
+        // а не попасть в «не перенесено».
+        val dnsRules = config.getJSONObject("dns").optJSONArray("rules") ?: error("нет dns.rules")
+        val dnsSets = (0 until dnsRules.length())
+            .flatMap { i ->
+                val arr = dnsRules.getJSONObject(i).optJSONArray("rule_set")
+                (0 until (arr?.length() ?: 0)).map { arr!!.getString(it) }
+            }
+        assertTrue(dnsSets.isNotEmpty(), "ожидался dns.rules с rule_set")
+        val routeSets = route.optJSONArray("rule_set")!!
+        val routeTags = (0 until routeSets.length()).map { routeSets.getJSONObject(it).getString("tag") }
+        assertTrue(dnsSets.all { it in routeTags }, "все rule_set из dns.rules должны быть объявлены")
     }
 }

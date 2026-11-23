@@ -85,7 +85,9 @@ internal fun HomeTab(
     noticeSeq: Int,
     trafficIntervalSec: Int,
     raw: String, connect: (String) -> Unit, disconnect: () -> Unit, reload: (Boolean) -> Unit,
-    onSelect: (String) -> Unit, onToggle: () -> Unit
+    onSelect: (String) -> Unit, onToggle: () -> Unit,
+    /** В широком окне бренд уже есть в сайдбаре — дублировать не нужно. */
+    hideBrand: Boolean = false,
 ) {
     val s = rememberStrings()
 
@@ -137,7 +139,7 @@ internal fun HomeTab(
         // так корректно считаются границы и не съедается прокрутка.
         contentPadding = PaddingValues(horizontal = 16.dp),
     ) {
-        item(key = "brand") {
+        if (!hideBrand) item(key = "brand") {
             Row(verticalAlignment = Alignment.Bottom) {
                 Text("WINGER", color = Cyan, fontWeight = FontWeight.ExtraBold, fontSize = 16.5.sp)
                 Text(

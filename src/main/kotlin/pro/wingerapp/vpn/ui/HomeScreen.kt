@@ -21,6 +21,8 @@ import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -34,6 +36,7 @@ import pro.wingerapp.vpn.R
 import pro.wingerapp.vpn.*
 import pro.wingerapp.vpn.net.*
 
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun HomeScreen(
     vm: AppViewModel,
@@ -110,7 +113,15 @@ fun HomeScreen(
     // изменили в настройках, при возврате значение подхватится.
     val trafficSec = remember(tab) { pro.wingerapp.vpn.Store.trafficIntervalSec() }
 
-    Box(Modifier.fillMaxSize().background(BgBrush).statusBarsPadding()) {
+    // Десктопный режим: на широком окне — сайдбар слева, как в Happ/Incy.
+    // Порог 820 dp: уже него телефонная колонка читается лучше.
+    val density = LocalDensity.current
+    val windowWidthDp = with(density) {
+        LocalWindowInfo.current.containerSize.width / density.density
+    }
+    val wide = windowWidthDp >= 820f
+
+    val content: @Composable () -> Unit = {
         when (tab) {
             0 -> HomeTab(
                 hwid = hwid, sub = st.plan, servers = st.servers, pings = st.pings,
@@ -125,6 +136,7 @@ fun HomeScreen(
                     vm.select(name)
                     vm.config(name)?.let(connect)
                 },
+                hideBrand = wide,
                 onToggle = {
                     // Состояние берём из двух источников: UI-флоу и persisted-флаг
                     // сервиса. На HyperOS они расходятся (сервис переживает
@@ -145,18 +157,35 @@ fun HomeScreen(
                 if (on) vm.config()?.let(connect)
             }
         }
-        Row(
-            Modifier.align(Alignment.BottomCenter).padding(12.dp).fillMaxWidth().height(60.dp)
-                .clip(RoundedCornerShape(20.dp)).background(Color(0xE6081224))
-                .border(1.dp, Line, RoundedCornerShape(20.dp)),
-            horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically
-        ) {
-            NavItem(s[R.string.nav_home], tab == 0) { tab = 0 }
-            NavItem(s[R.string.nav_account], tab == 1) { tab = 1 }
-            NavItem(s[R.string.nav_settings], tab == 2) { tab = 2 }
+    }
+
+    Box(Modifier.fillMaxSize().background(BgBrush).statusBarsPadding()) {
+        if (wide) {
+            Row(Modifier.fillMaxSize()) {
+                DesktopNav(tab, onPick = { tab = it })
+                // Контент не растягиваем на всю ширину: телефонные карточки на
+                // 1400 px выглядят пустыми, поэтому колонка ограничена и по центру.
+                Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
+                    Box(Modifier.widthIn(max = 760.dp).fillMaxHeight()) { content() }
+                }
+            }
+        } else {
+            content()
+            Row(
+                Modifier.align(Alignment.BottomCenter).padding(12.dp).fillMaxWidth().height(60.dp)
+                    .clip(RoundedCornerShape(20.dp)).background(Color(0xE6081224))
+                    .border(1.dp, Line, RoundedCornerShape(20.dp)),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                NavItem(s[R.string.nav_home], tab == 0) { tab = 0 }
+                NavItem(s[R.string.nav_account], tab == 1) { tab = 1 }
+                NavItem(s[R.string.nav_settings], tab == 2) { tab = 2 }
+            }
         }
         if (chat) SupportChat { chat = false }
     }
+
 }
 
 @Composable
@@ -168,4 +197,45 @@ internal fun NavItem(label: String, active: Boolean, onClick: () -> Unit) {
         fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
         modifier = Modifier.clickable { onClick() }.padding(horizontal = 16.dp, vertical = 12.dp)
     )
+}
+
+/**
+ * Боковое меню для широкого окна (десктоп).
+ *
+ * Повторяет привычную схему Happ/Incy: слева бренд и разделы, справа контент.
+ * Нижнее меню при этом не показывается — на большом экране оно выглядит
+ * как панель телефона.
+ */
+@Composable
+private fun DesktopNav(tab: Int, onPick: (Int) -> Unit) {
+    val s = rememberStrings()
+    Column(
+        Modifier.width(240.dp).fillMaxHeight()
+            .background(Color(0x33000000))
+            .border(1.dp, Line)
+            .padding(horizontal = 16.dp, vertical = 22.dp),
+    ) {
+        Text("WINGER", color = Cyan, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold)
+        Text(
+            "v${BuildConfig.VERSION_NAME}",
+            color = Muted, fontSize = 12.sp,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+        Spacer(Modifier.height(26.dp))
+        listOf(s[R.string.nav_home], s[R.string.nav_account], s[R.string.nav_settings])
+            .forEachIndexed { index, label ->
+                val active = tab == index
+                Text(
+                    label,
+                    color = if (active) TabOn else TabOff,
+                    fontSize = 16.sp,
+                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (active) Purple.copy(alpha = .18f) else Color.Transparent)
+                        .clickable { onPick(index) }
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                )
+            }
+    }
 }

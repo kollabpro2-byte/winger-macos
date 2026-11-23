@@ -1,0 +1,45 @@
+name: windows-msi
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  msi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # Ядро — то же, что в Android-сборке (sing-box-lx), плюс wintun для tun.
+      - name: Подготовить ядро и wintun
+        shell: pwsh
+        env:
+          CORE_URL: https://github.com/Leadaxe/sing-box-lx/releases/download/v1.14.4-lx.35/sing-box-1.14.4-lx.35-windows-amd64.zip
+          WINTUN_URL: https://www.wintun.net/builds/wintun-0.14.1.zip
+        run: |
+          New-Item -ItemType Directory -Force resources/core | Out-Null
+          Invoke-WebRequest -Uri $env:CORE_URL -OutFile core.zip
+          Expand-Archive core.zip -DestinationPath core-tmp
+          Copy-Item (Get-ChildItem core-tmp -Filter sing-box.exe -Recurse | Select-Object -First 1).FullName resources/core/
+          $cronet = Get-ChildItem core-tmp -Filter libcronet.dll -Recurse | Select-Object -First 1
+          if ($cronet) { Copy-Item $cronet.FullName resources/core/ }
+          Invoke-WebRequest -Uri $env:WINTUN_URL -OutFile wintun.zip
+          Expand-Archive wintun.zip -DestinationPath wintun-tmp
+          Copy-Item wintun-tmp/wintun/bin/amd64/wintun.dll resources/core/
+
+      - uses: gradle/actions/setup-gradle@v3
+
+      - name: Собрать MSI
+        run: gradle --no-daemon packageMsi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WingerVPN-msi
+          path: build/compose/binaries/main/msi/*.msi
+          if-no-files-found: error

@@ -1,0 +1,10 @@
+build/
+.gradle/
+.kotlin/
+local.properties
+
+# Ядро и wintun для MSI-сборки скачиваются скриптом, в git не нужны.
+resources/core/
+
+# Снимки экранов и прочие артефакты проверки.
+snapshots/

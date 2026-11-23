@@ -1,0 +1,275 @@
+package pro.wingerapp.vpn
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import org.json.JSONObject
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.TimeUnit
+
+/**
+ * Десктопная замена `WingerVpnService`.
+ *
+ * На Android ядро жило в том же процессе (libbox + VpnService). На Windows/macOS
+ * ядро — отдельный процесс `sing-box`, поэтому здесь:
+ *
+ *  1. поднимается прослойка LTE4/LTE5 (её порт уходит в конфиг как `shimPort`);
+ *  2. пишется конфиг sing-box (тун или локальный прокси — см. [coreConfig]);
+ *  3. запускается процесс ядра, его вывод пишется в журнал;
+ *  4. счётчики ↑/↓ читаются из Clash API самого ядра.
+ */
+object TunnelController {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    @Volatile
+    private var core: Process? = null
+
+    @Volatile
+    private var shim: Lte4Shim? = null
+
+    @Volatile
+    private var trafficJob: Job? = null
+
+    /** Номер попытки: поздние колбэки старой сессии не должны трогать новую. */
+    @Volatile
+    private var generation = 0
+
+    /** Локальный порт прокси-режима, когда тун недоступен без прав администратора. */
+    internal val proxyPort = 2080
+
+    /** Clash API ядра: через него UI получает реальные байты туннеля. */
+    private val clashPort = 9090
+
+    val corePath: File = Platform.file(if (Platform.isWindows) "sing-box.exe" else "sing-box")
+
+    fun isRunning(): Boolean = core?.isAlive == true
+
+    /**
+     * Поднимает туннель. Ошибки (нет ядра, ядро отвергло конфиг) приводят к
+     * понятному сообщению в UI, а не к «включено», которое ничего не делает.
+     */
+    fun start(xrayJson: String) {
+        val gen = ++generation
+        TunnelState.clearError()
+        scope.launch {
+            try {
+                stopInternal(notify = false)
+
+                val shimPort = startShim()
+                val config = coreConfig(xrayJson, shimPort)
+                val path = Platform.file("core.json")
+                path.writeText(config)
+                VpnLog.add("старт sing-box, конфиг ${config.length} байт")
+
+                val binary = resolveBinary()
+                val process = ProcessBuilder(binary.absolutePath, "run", "-c", path.absolutePath)
+                    .directory(Platform.dataDir)
+                    .redirectErrorStream(true)
+                    .start()
+                core = process
+                pipeOutput(process, gen)
+                Store.running(true)
+                Store.lastConfig(xrayJson)
+                TunnelState.serviceAlive = true
+                TunnelState.on()
+                CoreTraffic.reset()
+                startTrafficPolling(gen)
+
+                // Ядро может упасть сразу: ждём пару секунд и честно сообщаем.
+                delay(1_500)
+                if (gen == generation && !process.isAlive) {
+                    val code = runCatching { process.exitValue() }.getOrDefault(-1)
+                    TunnelState.fail("ядро не запустилось (код $code), подробности в логе")
+                    Store.running(false)
+                    TunnelState.serviceAlive = false
+                }
+            } catch (error: Throwable) {
+                VpnLog.add("старт туннеля: ${error.javaClass.simpleName}: ${error.message}")
+                TunnelState.fail(error.message ?: "не удалось запустить ядро")
+                Store.running(false)
+                TunnelState.serviceAlive = false
+            }
+        }
+    }
+
+    fun stop() {
+        generation++
+        scope.launch { stopInternal(notify = true) }
+    }
+
+    private suspend fun stopInternal(notify: Boolean) {
+        trafficJob?.cancel()
+        trafficJob = null
+        runCatching { shim?.stop() }
+        shim = null
+        val process = core
+        core = null
+        if (process != null && process.isAlive) {
+            process.destroy()
+            if (!process.waitFor(3, TimeUnit.SECONDS)) process.destroyForcibly()
+        }
+        CoreTraffic.reset()
+        TunnelState.serviceAlive = false
+        Store.running(false)
+        Store.clearLastConfig()
+        if (notify) TunnelState.off()
+        VpnLog.add("туннель остановлен")
+    }
+
+    /** Прослойка нужна только для шлюзов Яндекса, но порт стоит копейки. */
+    private fun startShim(): Int = try {
+        val instance = Lte4Shim(
+            mode = Store.lte4Mode(),
+            initialStreams = Store.lte4Streams(),
+            maxStreams = Store.lte4StreamsDefault(),
+            onStreamsChanged = { Store.lte4Streams(it) },
+            // На десктопе нет VpnService, защищать сокеты не от чего.
+            protect = { true },
+        )
+        shim = instance
+        instance.start()
+    } catch (error: Throwable) {
+        VpnLog.add("прослойка не поднялась: ${error.message}")
+        0
+    }
+
+    /**
+     * Конфиг ядра: сначала полноценный тун (весь трафик системы), при отсутствии
+     * прав — локальный прокси, чтобы приложение всё же работало.
+     */
+    internal fun coreConfig(xrayJson: String, shimPort: Int): String {
+        val options = TunnelOptions(
+            dnsServer = Store.dnsServer(),
+            directDomains = Store.bypass(),
+            subRouting = if (Store.subRouting()) RoutingPlan.RULES_AND_DNS else RoutingPlan.OFF,
+            useMux = Store.useMux(),
+            mtu = if (Store.mtuLow()) 1280 else 1500,
+            coreLogFile = Platform.file("singbox.log").absolutePath,
+            cacheFile = Platform.file("cache.db").absolutePath,
+            shimPort = shimPort,
+            ipv6Proxy = Store.ipv6Proxy(),
+        )
+        val base = JSONObject(toSingBox(xrayJson, options))
+        base.put("inbounds", org.json.JSONArray().put(inbound()))
+        base.put(
+            "experimental",
+            JSONObject().put(
+                "clash_api",
+                JSONObject()
+                    .put("external_controller", "127.0.0.1:$clashPort")
+                    .put("default_mode", "rule"),
+            ),
+        )
+        return base.toString()
+    }
+
+    /** tun — как на телефоне; mixed — запасной путь без прав администратора. */
+    private fun inbound(): JSONObject = if (Store.desktopTun()) {
+        JSONObject()
+            .put("type", "tun")
+            .put("tag", "tun-in")
+            .put("address", org.json.JSONArray().put("172.19.0.1/30"))
+            .put("mtu", if (Store.mtuLow()) 1280 else 1500)
+            .put("auto_route", true)
+            .put("strict_route", true)
+            .put("stack", "gvisor")
+            .put("sniff", true)
+    } else {
+        JSONObject()
+            .put("type", "mixed")
+            .put("tag", "mixed-in")
+            .put("listen", "127.0.0.1")
+            .put("listen_port", proxyPort)
+    }
+
+    /**
+     * Ищет бинарь ядра: рядом с настройками, рядом с приложением (папка `core`
+     * в portable-сборке), затем переменная окружения и `PATH`.
+     */
+    private fun resolveBinary(): File {
+        val exe = if (Platform.isWindows) "sing-box.exe" else "sing-box"
+        val cwd = File(System.getProperty("user.dir"))
+        // jpackage-сборка (MSI) кладёт ресурсы сюда — см. appResourcesRootDir в build.gradle.kts.
+        val packaged = System.getProperty("compose.application.resources.dir")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { File(it, "core/$exe") }
+        val candidates = buildList {
+            add(corePath)
+            packaged?.let { add(it) }
+            add(File(cwd, "core/$exe"))
+            add(File(cwd, exe))
+            System.getenv("WINGER_CORE")?.takeIf { it.isNotBlank() }?.let { add(File(it)) }
+            add(File(Platform.dataDir.parentFile ?: Platform.dataDir, exe))
+        }
+        candidates.firstOrNull { it.exists() && it.canExecute() }?.let { return it }
+        val fromPath = System.getenv("PATH").orEmpty().split(File.pathSeparatorChar)
+            .map { File(it, exe) }
+            .firstOrNull { it.exists() && it.canExecute() }
+        return fromPath ?: error(
+            "ядро sing-box не найдено. Положите ${corePath.name} в ${Platform.dataDir.absolutePath} " +
+                "или в папку core рядом с приложением"
+        )
+    }
+
+    /** Вывод ядра построчно уходит в журнал: без него не видно причин отказа. */
+    private fun pipeOutput(process: Process, gen: Int) {
+        scope.launch {
+            runCatching {
+                process.inputStream.bufferedReader().forEachLine { line ->
+                    if (line.isNotBlank() && Diag.allow("core:$line", 400)) VpnLog.add("[core] $line")
+                }
+            }
+        }
+        scope.launch {
+            while (gen == generation && process.isAlive) delay(500)
+            if (gen != generation) return@launch
+            val code = runCatching { process.exitValue() }.getOrNull() ?: return@launch
+            VpnLog.add("ядро завершилось, код $code")
+            TunnelState.serviceAlive = false
+            Store.running(false)
+            CoreTraffic.reset()
+            TunnelState.fail("ядро остановилось (код $code)")
+        }
+    }
+
+    /** Totals из Clash API — единственный честный источник байтов на десктопе. */
+    private fun startTrafficPolling(gen: Int) {
+        trafficJob?.cancel()
+        trafficJob = scope.launch {
+            while (gen == generation) {
+                runCatching {
+                    val (code, body) = get("http://127.0.0.1:$clashPort/connections")
+                    if (code in 200..299) {
+                        val json = JSONObject(body)
+                        CoreTraffic.update(
+                            json.optLong("downloadTotal"),
+                            json.optLong("uploadTotal"),
+                        )
+                    }
+                }
+                delay(Store.trafficIntervalSec().coerceIn(1, 60) * 1000L)
+            }
+        }
+    }
+
+    private suspend fun get(url: String): Pair<Int, String> =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 1_500
+                readTimeout = 2_500
+                requestMethod = "GET"
+            }
+            try {
+                val code = connection.responseCode
+                val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                code to (stream?.bufferedReader()?.readText().orEmpty())
+            } finally {
+                connection.disconnect()
+            }
+        }
+}

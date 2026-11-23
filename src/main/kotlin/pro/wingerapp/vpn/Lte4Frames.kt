@@ -1,0 +1,392 @@
+package pro.wingerapp.vpn
+
+import java.nio.ByteBuffer
+
+/**
+ * Бинарный формат кадров прослойки «LTE4 shim».
+ *
+ * ```
+ * байт 0      версия 0x01
+ * байт 1      тип: 0x00 DATA, 0x01 PING, 0x02 CLOSE
+ * байты 2..5  seq, uint32 big-endian (с 0, +1 на каждый DATA в соединении)
+ * дальше      payload (только у DATA)
+ * ```
+ *
+ * Шлюз Яндекса пересылает сообщения параллельно и вразнобой, поэтому порядок
+ * восстанавливает принимающая сторона по seq — см. [ReorderBuffer].
+ *
+ * CLOSE (0x02) — конец VLESS-соединения: сервер шлёт его, когда Xray закрыл
+ * поток, клиент — когда закрывает свою сторону. Без него конец соединения
+ * виден только по таймауту.
+ */
+internal object Lte4 {
+    const val VERSION: Int = 0x01
+    const val TYPE_DATA: Int = 0x00
+    const val TYPE_PING: Int = 0x01
+    const val TYPE_CLOSE: Int = 0x02
+
+    /**
+     * Предел payload одного DATA. У шлюза два ограничения: сообщение до 128 КБ и
+     * кадр до 32 КБ, а OkHttp не умеет фрагментировать исходящий кадр сам,
+     * поэтому режем на 32 КБ и ставим каждому куску свой seq.
+     */
+    const val MAX_CHUNK: Int = 32 * 1024
+
+    /** Заголовок кадра: версия, тип и seq. */
+    const val HEADER: Int = 6
+
+    data class Frame(val type: Int, val seq: Long, val payload: ByteArray)
+
+    fun encode(type: Int, seq: Long, payload: ByteArray = ByteArray(0)): ByteArray {
+        val out = ByteBuffer.allocate(HEADER + payload.size)
+        out.put(VERSION.toByte())
+        out.put(type.toByte())
+        out.putInt(seq.toInt())
+        out.put(payload)
+        return out.array()
+    }
+
+    /** Возвращает null, если кадр короче заголовка, чужая версия или неизвестный тип. */
+    fun decode(bytes: ByteArray): Frame? {
+        if (bytes.size < HEADER) return null
+        if (bytes[0].toInt() and 0xFF != VERSION) return null
+        val type = bytes[1].toInt() and 0xFF
+        if (type != TYPE_DATA && type != TYPE_PING && type != TYPE_CLOSE) return null
+        val seq = ByteBuffer.wrap(bytes, 2, 4).int.toLong() and 0xFFFFFFFFL
+        val payload = if (bytes.size > HEADER) bytes.copyOfRange(HEADER, bytes.size) else ByteArray(0)
+        return Frame(type, seq, payload)
+    }
+
+    /** Признак шлюза Яндекса: по нему сервер получает прослойку, остальные — как раньше. */
+    fun isLte4Gateway(host: String): Boolean {
+        val h = host.trim().lowercase()
+        return h == "apigw.yandexcloud.net" || h.endsWith(".apigw.yandexcloud.net")
+    }
+
+    /**
+     * Прослойка включается только для path=/ws — так хост приходит в подписке.
+     * Любой другой путь (например `/ws?ed=2048`) — обычный VLESS-WS без кадров:
+     * иначе мы бы переписывали путь, который задал он.
+     */
+    fun isGatewayPath(path: String): Boolean {
+        val p = path.trim()
+        return p == "/ws" || p == "/ws/"
+    }
+
+    /** Прослойка выключена: ядро ходит в шлюз напрямую, как Xray. */
+    const val MODE_OFF: Int = 0
+
+    /**
+     * Байты не меняются, но после каждого сообщения уходит пустое: шлюз
+     * придерживает сообщение до прихода следующего, и пустое его выталкивает.
+     */
+    const val MODE_FLUSH: Int = 1
+
+    /**
+     * Кадры с версией, типом и seq. Требует такой же разбор на стороне сервера
+     * за шлюзом — без него поток превращается в мусор.
+     */
+    const val MODE_FRAMED: Int = 2
+
+    /**
+     * Склейка крупными сообщениями плюс выталкивание хвоста по паузе.
+     * Байты не меняются, лишнее сообщение — одно на пачку, а не на каждый кусок.
+     */
+    const val MODE_AUTO: Int = 3
+
+    fun modeName(mode: Int): String = when (mode) {
+        MODE_OFF -> "выкл"
+        MODE_FLUSH -> "флаш"
+        MODE_FRAMED -> "кадры"
+        MODE_AUTO -> "авто"
+        else -> "?"
+    }
+
+    /**
+     * Кадровый режим на релее включается параметром в path: `/ws?f=1`.
+     * С v4 релей умеет отправлять вниз параллельно, и число потоков кодируется
+     * в самом флаге: `/ws?f=1c32`. Отдельный `&c=` шлюз отбрасывает.
+     * Без него релей работает как обычный VLESS-WS, поэтому добавляем сами.
+     */
+    fun framedPath(path: String, streams: Int = 1): String {
+        val p = path.trim().ifBlank { "/ws" }
+        // Уже включено в подписке — не переопределяем.
+        if (p.contains("f=")) return p
+        val n = streams.coerceIn(1, 32)
+        val flag = if (n > 1) "f=1c$n" else "f=1"
+        return if (p.contains('?')) "$p&$flag" else "$p?$flag"
+    }
+}
+
+/**
+ * Расписание «толкачей» для батч-режимов.
+ *
+ * По замерам на релее: сразу после пачки толкач залипает вместе с хвостом,
+ * поэтому первый идёт через [firstDelayMs]; примерно в 10 % случаев залипает и
+ * сам толкач, поэтому повторяем через 50, 150 и 400 мс, пока не придут новые
+ * данные. Пришли данные — расписание сбрасывается.
+ */
+internal class TailPusher(private val firstDelayMs: Long = 15) {
+
+    /** Смещения повторов (мс) от предыдущего толкача; 0 — это и есть первый. */
+    private val retries = longArrayOf(0, 50, 150, 400)
+
+    /** -1 — нечего толкать, иначе индекс следующего повтора. */
+    private var stage = -1
+    private var nextAt = 0L
+
+    /** Сколько толкачей реально ушло (для лога). */
+    var sent: Long = 0L
+        private set
+
+    /** Пришли новые данные — запланированные толкачи больше не нужны. */
+    fun onData() {
+        stage = -1
+        nextAt = 0L
+    }
+
+    /** Отправили пачку — планируем выталкивание хвоста. */
+    fun onBatchSent(nowMs: Long) {
+        stage = 0
+        nextAt = nowMs + firstDelayMs
+    }
+
+    /** Когда пора толкать; -1 — не запланировано. */
+    fun dueAt(): Long = if (stage < 0) -1L else nextAt
+
+    /** Пора? Если да — сдвигает расписание на следующий повтор. */
+    fun takeIfDue(nowMs: Long): Boolean {
+        if (stage < 0 || nowMs < nextAt) return false
+        sent++
+        stage++
+        if (stage >= retries.size) {
+            stage = -1
+            nextAt = 0L
+        } else {
+            nextAt = nowMs + retries[stage]
+        }
+        return true
+    }
+}
+
+/**
+ * Что именно прослойка отправляет в шлюз на один кусок потока.
+ *
+ * Вынесено из сетевого кода, чтобы поведение режимов проверялось тестами:
+ * ошибка здесь стоит дорого — ядро видит «ядро запущено, а трафика нет».
+ */
+internal object Lte4Wire {
+
+    /** Сообщения для шлюза: в «кадровом» режиме это кадр, иначе — сам кусок. */
+    fun outbound(mode: Int, seq: Long, chunk: ByteArray): List<ByteArray> = when (mode) {
+        Lte4.MODE_FRAMED -> listOf(Lte4.encode(Lte4.TYPE_DATA, seq, chunk))
+        Lte4.MODE_FLUSH -> listOf(chunk, EMPTY)
+        else -> listOf(chunk)
+    }
+
+    /** Периодический «толкач»: в кадрах — PING, во флаше — пустое сообщение. */
+    fun keepAlive(mode: Int, seq: Long): ByteArray? = when (mode) {
+        Lte4.MODE_FRAMED -> Lte4.encode(Lte4.TYPE_PING, seq)
+        Lte4.MODE_FLUSH -> EMPTY
+        else -> null
+    }
+
+    /** Нужно ли разбирать входящие кадры и восстанавливать порядок. */
+    fun inboundIsFramed(mode: Int): Boolean = mode == Lte4.MODE_FRAMED
+
+    private val EMPTY = ByteArray(0)
+}
+
+/**
+ * Склейка исходящего потока и «выталкивание» хвоста.
+ *
+ * Зачем: шлюз держит последнее сообщение пачки, пока не придёт следующее. Из-за
+ * этого не открываются страницы (короткий запрос висит) и не завершается
+ * отправка файла (виснет финальный кусок). Лечится пустым сообщением после
+ * пачки, но слать его после *каждого* куска — вдвое больше сообщений и вдвое
+ * медленнее.
+ *
+ * Здесь наоборот: байты копятся и уходят одним сообщением до [maxBatch], а
+ * пустой «толкач» идёт только когда пачка закрылась — по размеру или по тишине
+ * [idleMs]. Скачивание не платит ничего, отправка не встаёт.
+ *
+ * Порядок байт сохраняется: [drain] всегда забирает всё, что накопилось к
+ * моменту вызова, и вызывающий отправляет это под тем же локом.
+ */
+internal class AutoUplink(
+    private val maxBatch: Int = 32 * 1024,
+    private val idleMs: Long = 25,
+) {
+    private val buf = java.io.ByteArrayOutputStream()
+
+    /** Когда последний раз приходили байты от ядра. */
+    private var lastIn: Long = 0
+
+    /** Сколько пачек отправлено (для лога). */
+    var batches: Long = 0L
+        private set
+
+    /** Сколько раз пачку закрыла тишина, а не размер (видно, работает ли порог). */
+    var idleFlushes: Long = 0L
+        private set
+
+    /** Добавить байты. Непустой список — пачка набралась, отправляйте сразу. */
+    @Synchronized
+    fun offer(bytes: ByteArray, nowMs: Long): List<ByteArray> {
+        lastIn = nowMs
+        buf.write(bytes)
+        if (buf.size() < maxBatch) return emptyList()
+        batches++
+        return drain()
+    }
+
+    /** Отдать накопленное, если тишина дольше порога. Пусто — значит рано. */
+    @Synchronized
+    fun flushIfIdle(nowMs: Long): List<ByteArray> {
+        if (buf.size() == 0) return emptyList()
+        if (nowMs - lastIn < idleMs) return emptyList()
+        batches++
+        idleFlushes++
+        return drain()
+    }
+
+    /** Отдать всё немедленно — при закрытии соединения. */
+    @Synchronized
+    fun drainNow(): List<ByteArray> {
+        if (buf.size() == 0) return emptyList()
+        batches++
+        return drain()
+    }
+
+    /** Сколько байт ждёт отправки (для диагностики). */
+    @Synchronized
+    fun pending(): Int = buf.size()
+
+    private fun drain(): List<ByteArray> {
+        val all = buf.toByteArray()
+        buf.reset()
+        val out = ArrayList<ByteArray>(2)
+        var off = 0
+        while (off < all.size) {
+            val n = minOf(maxBatch, all.size - off)
+            out += all.copyOfRange(off, off + n)
+            off += n
+        }
+        return out
+    }
+}
+
+/**
+ * Восстановление порядка DATA-кадров по seq.
+ *
+ * Шлюз может прислать seq 5 раньше 4 и «придержать» последний, пока не придёт
+ * следующий. Держим пришедшие не по порядку и отдаём строго по возрастанию.
+ */
+internal class ReorderBuffer(
+    private val maxBuffered: Int = 2048,
+    /** Потолок по памяти: релей держит до 16 МБ, телефону хватит 8 МБ. */
+    private val maxBufferedBytes: Long = 8L * 1024 * 1024,
+) {
+    private val pending = java.util.TreeMap<Long, ByteArray>()
+    /** Когда кадр пришёл — по нему считаем, сколько он прождал «дыру» в seq. */
+    private val arrivedAt = HashMap<Long, Long>()
+    private var nextSeq = 0L
+    private var pendingBytes = 0L
+
+    /** Сколько раз кадр пришёл раньше предыдущего (счётчик для лога). */
+    var reordered: Long = 0L
+        private set
+
+    /** Сколько кадров пришлось отбросить как дубли или мусор. */
+    var dropped: Long = 0L
+        private set
+
+    /** Максимальная глубина буфера — видно, насколько сильно шлюз перемешивает. */
+    var maxDepth: Int = 0
+        private set
+
+    /** Сколько прождал последний отданный кадр, мс. Видно «пачки» шлюза. */
+    var lastWaitMs: Long = 0L
+        private set
+
+    /** Худшее ожидание за сессию, мс. */
+    var maxWaitMs: Long = 0L
+        private set
+
+    /**
+     * Переполнение буфера: держать дальше нельзя, соединение надо пересоздать.
+     * По спецификации релея пропусков не бывает — кадр либо дойдёт, либо релей
+     * сам закроет соединение, поэтому «прыжок через дырку» тут недопустим.
+     */
+    @Volatile
+    var overflowed: Boolean = false
+        private set
+
+    /** Когда впервые появилась незакрытая дырка в seq (0 — дырки нет). */
+    private var gapSince: Long = 0L
+
+    /** Дырка не закрывается дольше [timeoutMs] — соединение надо пересоздать. */
+    @Synchronized
+    fun isStalled(nowMs: Long, timeoutMs: Long): Boolean {
+        if (gapSince == 0L || pending.isEmpty()) return false
+        return nowMs - gapSince >= timeoutMs
+    }
+
+    /**
+     * Последний непрерывно выданный seq; -1, если ещё ничего не выдано.
+     * Это значение клиент шлёт серверу в `X-Ack`: всё до него сервер может
+     * забыть, всё после — обязан держать и повторить.
+     */
+    @Synchronized
+    fun lastDelivered(): Long = nextSeq - 1
+
+    /**
+     * Новая сессия: нумерация начинается заново и буфер пуст. Нужно после
+     * `410 Gone` — сервер открыл новую сессию, и её seq идут с нуля.
+     */
+    @Synchronized
+    fun reset() {
+        pending.clear()
+        arrivedAt.clear()
+        pendingBytes = 0L
+        nextSeq = 0L
+        gapSince = 0L
+        lastWaitMs = 0L
+        maxWaitMs = 0L
+    }
+
+    /** Кладёт кадр и возвращает всё, что теперь можно отдать по порядку. */
+    fun put(seq: Long, payload: ByteArray, nowMs: Long = System.currentTimeMillis()): List<ByteArray> {
+        if (seq < nextSeq) {
+            dropped++
+            return emptyList()
+        }
+        if (seq > nextSeq) {
+            reordered++
+            if (gapSince == 0L) gapSince = nowMs
+        }
+        pending[seq] = payload
+        pendingBytes += payload.size
+        arrivedAt[seq] = nowMs
+        if (pending.size > maxDepth) maxDepth = pending.size
+        if (pending.size > maxBuffered || pendingBytes > maxBufferedBytes) {
+            // Не прыгаем через дырку: по спецификации релея пропусков не бывает,
+            // значит мы что-то потеряли и соединение надо пересоздать.
+            overflowed = true
+            return emptyList()
+        }
+        val out = ArrayList<ByteArray>(4)
+        while (true) {
+            val head = pending.remove(nextSeq) ?: break
+            pendingBytes -= head.size
+            val arrived = arrivedAt.remove(nextSeq) ?: nowMs
+            lastWaitMs = (nowMs - arrived).coerceAtLeast(0L)
+            if (lastWaitMs > maxWaitMs) maxWaitMs = lastWaitMs
+            out += head
+            nextSeq++
+        }
+        // Дырки нет, если после выдачи буфер пуст.
+        if (pending.isEmpty()) gapSince = 0L
+        return out
+    }
+}

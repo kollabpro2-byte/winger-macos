@@ -207,6 +207,11 @@ object TunnelController {
             add(File(Platform.dataDir.parentFile ?: Platform.dataDir, exe))
         }
         candidates.firstOrNull { it.exists() && it.canExecute() }?.let { return it }
+        // jpackage при копировании может потерять бит исполнения — возвращаем его.
+        candidates.firstOrNull { it.exists() }?.let { file ->
+            runCatching { file.setExecutable(true) }
+            return file
+        }
         val fromPath = System.getenv("PATH").orEmpty().split(File.pathSeparatorChar)
             .map { File(it, exe) }
             .firstOrNull { it.exists() && it.canExecute() }

@@ -3,8 +3,7 @@ build/
 .kotlin/
 local.properties
 
-# Ядро и wintun для MSI-сборки скачиваются скриптом, в git не нужны.
-resources/core/
+# Ядра скачиваются скриптами (tools/fetch_windows_deps.sh, ресурсы для dmg), в git не нужны.
+resources/
 
-# Снимки экранов и прочие артефакты проверки.
 snapshots/

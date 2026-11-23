@@ -28,6 +28,32 @@ winger-desktop/tools/package_windows.sh
 MSI ставится через CI: `.github/workflows/windows.yml` на `windows-latest`
 делает `gradle packageMsi` (jpackage не умеет кросс-сборку с macOS).
 
+## Сборка под macOS
+
+Нужен JDK с `jpackage` (у JBR из Android Studio его нет):
+
+```bash
+curl -fsSL -o /tmp/jdk21.tar.gz \
+  'https://api.adoptium.net/v3/binary/latest/21/ga/mac/aarch64/jdk/hotspot/normal/eclipse'
+mkdir -p ~/.local/jdk21 && tar -xzf /tmp/jdk21.tar.gz -C ~/.local/jdk21 --strip-components=1
+
+# ядро для macOS кладётся в resources/macos/core (Compose ждёт структуру <os>/…)
+mkdir -p winger-desktop/resources/macos/core
+cp dist/mac/sing-box winger-desktop/resources/macos/core/
+
+export JAVA_HOME="$HOME/.local/jdk21/Contents/Home"
+cd winger-desktop && gradle packageDmg
+# → build/compose/binaries/main/dmg/WingerVPN-1.0.75.dmg
+```
+
+На macOS по умолчанию включается **прокси-режим** (без root): туннель поднимает
+локальный прокси `127.0.0.1:2080`. Чтобы проверить настоящий VPN на весь трафик,
+запустите приложение от root с флагом tun:
+
+```bash
+sudo env WINGER_MODE=tun /Applications/WingerVPN.app/Contents/MacOS/WingerVPN
+```
+
 ## Запуск при разработке (macOS)
 
 ```bash

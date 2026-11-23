@@ -225,14 +225,17 @@ object Store {
      * Туннель на весь трафик системы (tun) или локальный прокси.
      *
      * На Windows tun — режим по умолчанию: он требует прав администратора и
-     * `wintun.dll`, но только так VPN работает для всех программ. На macOS при
-     * разработке по умолчанию прокси, чтобы не запускать приложение от root.
+     * `wintun.dll`, но только так VPN работает для всех программ. На macOS по
+     * умолчанию прокси: tun там требует root, поэтому включается осознанно.
      *
-     * `WINGER_MODE=proxy` принудительно включает прокси-режим — так пакет можно
-     * запустить без прав администратора (`run-no-admin.bat`).
+     * `WINGER_MODE=proxy` — принудительно прокси (пакет без прав), `WINGER_MODE=tun`
+     * — принудительно tun (запуск через `sudo`, см. run-tun.command).
      */
     fun desktopTun(): Boolean {
-        if (System.getenv("WINGER_MODE").equals("proxy", ignoreCase = true)) return false
+        when (System.getenv("WINGER_MODE")?.lowercase()) {
+            "proxy" -> return false
+            "tun" -> return true
+        }
         return getBool("desktopTun", Platform.isWindows)
     }
 

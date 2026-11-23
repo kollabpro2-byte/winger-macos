@@ -46,12 +46,20 @@ compose.desktop {
         mainClass = "pro.wingerapp.vpn.MainKt"
 
         nativeDistributions {
-            // Целевая платформа — Windows. MSI собирается на Windows-раннере:
-            // jpackage не умеет кросс-сборку. Portable-пакет делает
-            // tools/package_windows.sh.
-            targetFormats(TargetFormat.Msi)
+            // Формат зависит от хоста: jpackage не умеет кросс-сборку. На macOS
+            // это dmg для локальной проверки, на Windows — msi (CI).
+            val hostOs = System.getProperty("os.name").orEmpty()
+            targetFormats(
+                *if (hostOs.startsWith("Mac", ignoreCase = true)) {
+                    arrayOf(TargetFormat.Dmg)
+                } else {
+                    arrayOf(TargetFormat.Msi)
+                }
+            )
             packageName = "WingerVPN"
-            packageVersion = "0.1.75"
+            // jpackage требует MAJOR > 0, поэтому у пакета своя версия;
+            // версия приложения (0.1.75) остаётся в интерфейсе и в логе.
+            packageVersion = "1.0.75"
             description = "Winger VPN"
             vendor = "Winger"
             // Ядро и wintun кладутся сюда перед сборкой MSI: в установленной
@@ -65,6 +73,12 @@ compose.desktop {
                 perUserInstall = true
                 // Стабильный UUID: обновление ставится поверх, а не рядом.
                 upgradeUuid = "6f1c9a52-4b8e-4b0a-9d7e-2d3f5a1c8e41"
+            }
+            macOS {
+                bundleID = "pro.wingerapp.vpn"
+                // Для локальной проверки на маке: gradle packageDmg.
+                // Приложение подписано ad-hoc, поэтому при первом запуске
+                // macOS попросит подтвердить открытие.
             }
         }
     }

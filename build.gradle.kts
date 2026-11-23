@@ -24,6 +24,8 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // Android-версия использует встроенный org.json; на JVM он отдельной библиотекой.
     implementation("org.json:json:20240303")
+    // TCP-пинг в обход tun: setsockopt(IP_BOUND_IF) через JNA.
+    implementation("net.java.dev.jna:jna:5.14.0")
 
     testImplementation(kotlin("test"))
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.10.2")
@@ -45,6 +47,11 @@ tasks.test {
 compose.desktop {
     application {
         mainClass = "pro.wingerapp.vpn.MainKt"
+        // Доступ к дескриптору сокета для привязки к интерфейсу.
+        jvmArgs += listOf(
+            "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+            "--add-opens=java.base/java.io=ALL-UNNAMED",
+        )
 
         nativeDistributions {
             // Формат зависит от хоста: jpackage не умеет кросс-сборку. На macOS

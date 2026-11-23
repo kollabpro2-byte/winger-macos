@@ -814,10 +814,10 @@ private fun ServerRow(
                     Box(Modifier.size(5.dp).clip(CircleShape).background(c))
                     Text(
                         when {
-                            ms == null -> noneLabel
-                            // −1: сервер не ответил. −2: узел через CDN, честного
-                            // числа нет — показываем «—», а не расстояние до края.
-                            ms == -1 -> noneLabel
+                            // Сервер реально недоступен как прокси.
+                            ms == null -> "n/a"
+                            ms == -1 -> "n/a"
+                            // −2: узел через CDN, честного числа нет.
                             ms == -2 -> unknownLabel
                             else -> ms.toString()
                         },

@@ -32,11 +32,15 @@ object PingSmoke {
 
         val tags = TunnelController.pingTagCount()
         println("SMOKE-PING: outbound'ов замера $tags")
-        val names = readHapp(cached.raw).servers.map { it.name }.take(5)
-        for (name in names) {
-            val tag = TunnelController.pingTag(name) ?: continue
-            val ms = runCatching { coreDelay(proxyTag = tag, timeoutMs = 4000) }.getOrNull()
-            println("SMOKE-PING: $name → ${ms ?: "нет"} мс")
+        println("SMOKE-PING: InterfacePing доступен=${InterfacePing.supported}")
+        val nodes = readHapp(cached.raw).servers
+        for (node in nodes.take(6)) {
+            val tcp = InterfacePing.ping(node.host, node.port)
+            val core = TunnelController.pingTag(node.name)?.let { tag ->
+                runCatching { coreDelay(proxyTag = tag, timeoutMs = 4000) }.getOrNull()
+            }
+            println("SMOKE-PING: ${node.name} → tcp=${tcp ?: "n/a"} мс, через ядро=${core ?: "n/a"} мс")
+            InterfacePing.lastError?.let { println("SMOKE-PING: ошибка TCP: $it") }
         }
 
         TunnelController.stop()

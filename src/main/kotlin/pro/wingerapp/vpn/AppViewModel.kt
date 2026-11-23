@@ -382,7 +382,18 @@ class AppViewModel {
                             val tag = TunnelController.pingTag(node.name)
                                 ?: return@async node.name to null
                             node.name to gate.withPermit {
-                                runCatching { coreDelay(proxyTag = tag, timeoutMs = 3000) }.getOrNull()
+                                // Доступность проверяем реальным запросом через этот
+                                // сервер: порт может быть открыт, а прокси не работать.
+                                val usable = runCatching {
+                                    coreDelay(proxyTag = tag, timeoutMs = 3000)
+                                }.getOrNull() != null
+                                if (!usable) return@withPermit null
+                                // Число берём из TCP-рукопожатия мимо туннеля:
+                                // оно близко к тому, что показывает Incy. Если
+                                // привязка к интерфейсу недоступна — оставляем
+                                // значение, измеренное через ядро.
+                                InterfacePing.ping(node.host, node.port)
+                                    ?: runCatching { coreDelay(proxyTag = tag, timeoutMs = 3000) }.getOrNull()
                             }
                         }
                     }.awaitAll()

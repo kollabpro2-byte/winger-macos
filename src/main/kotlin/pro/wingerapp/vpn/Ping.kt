@@ -67,6 +67,86 @@ fun coreDelay(
     org.json.JSONObject(body).optInt("delay", -1).takeIf { it > 0 }
 }.getOrNull()
 
+/**
+ * TCP-пинг в обход туннеля.
+ *
+ * Пока tun включён, обычный `connect()` завершает локальный стек ядра, поэтому
+ * числа были бы ~1 мс. Привязываем сокет к физическому интерфейсу
+ * (`setsockopt(IP_BOUND_IF)`) — тогда пакет уходит мимо tun и мы меряем реальное
+ * рукопожатие до сервера, как это делает Incy. Недоступный сервер даёт null —
+ * в списке это «n/a», то есть доступность проверяется честно.
+ *
+ * Только macOS: на Windows/Linux функция вернёт null, и вызывающий код
+ * переключится на замер через ядро.
+ */
+object InterfacePing {
+    private const val IPPROTO_IP = 0
+    private const val IP_BOUND_IF = 25
+    private const val IPPROTO_IPV6 = 41
+    private const val IPV6_BOUND_IF = 125
+
+    private interface LibC : com.sun.jna.Library {
+        fun if_nametoindex(name: String): Int
+        fun setsockopt(fd: Int, level: Int, optname: Int, optval: IntArray, optlen: Int): Int
+    }
+
+    private val libc: LibC? = runCatching {
+        if (System.getProperty("os.name").orEmpty().startsWith("Mac")) {
+            com.sun.jna.Native.load("c", LibC::class.java)
+        } else null
+    }.getOrNull()
+
+    /** Индекс интерфейса, через который идёт обычный трафик (Wi-Fi/Ethernet). */
+    private val ifIndex: Int by lazy {
+        val candidates = listOf("en0", "en1", "en2")
+        candidates.firstNotNullOfOrNull { name ->
+            runCatching { libc?.if_nametoindex(name) }.getOrNull()?.takeIf { it > 0 }
+        } ?: 0
+    }
+
+    val supported: Boolean get() = libc != null && ifIndex > 0
+
+    /** Последняя ошибка привязки/подключения — для диагностики в логе. */
+    @Volatile
+    var lastError: String? = null
+        private set
+
+    fun ping(host: String, port: Int, timeoutMs: Int = 1500): Int? {
+        if (!supported || host.isBlank() || port !in 1..65535) return null
+        val ips = resolveCached(host)
+        for (ip in ips.take(2)) {
+            val ms = runCatching {
+                // Семейство сокета должно совпадать с адресом: IPv4-опция на
+                // IPv6-сокете даёт EINVAL.
+                val family = if (ip is Inet4Address) {
+                    java.net.StandardProtocolFamily.INET
+                } else {
+                    java.net.StandardProtocolFamily.INET6
+                }
+                java.nio.channels.SocketChannel.open(family).use { channel ->
+                    bind(channel, ifIndex, ip is Inet4Address)
+                    val start = System.nanoTime()
+                    channel.socket().connect(InetSocketAddress(ip, port), timeoutMs)
+                    ((System.nanoTime() - start) / 1_000_000).toInt().coerceAtLeast(1)
+                }
+            }.onFailure { lastError = "${it.javaClass.simpleName}: ${it.message}" }.getOrNull() ?: continue
+            return ms
+        }
+        return null
+    }
+
+    private fun bind(channel: java.nio.channels.SocketChannel, index: Int, ipv4: Boolean) {
+        val fdField = channel.javaClass.getDeclaredField("fd").apply { isAccessible = true }
+        val descriptor = fdField.get(channel) as java.io.FileDescriptor
+        val fd = java.io.FileDescriptor::class.java
+            .getDeclaredField("fd").apply { isAccessible = true }.getInt(descriptor)
+        val level = if (ipv4) IPPROTO_IP else IPPROTO_IPV6
+        val option = if (ipv4) IP_BOUND_IF else IPV6_BOUND_IF
+        val rc = libc!!.setsockopt(fd, level, option, intArrayOf(index), 4)
+        check(rc == 0) { "setsockopt rc=$rc errno=" + com.sun.jna.Native.getLastError() + " fd=" + fd + " if=" + index }
+    }
+}
+
 private const val CONNECT_TIMEOUT_MS = 1200
 private const val IP_TTL_MS = 10L * 60L * 1000L
 private const val FAST_ENOUGH_MS = 120

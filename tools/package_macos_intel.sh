@@ -47,6 +47,8 @@ cat > "$APP/Contents/MacOS/WingerVPN" <<'LAUNCH'
 DIR=$(cd "$(dirname "$0")/.." && pwd)
 export WINGER_CORE="$DIR/core/sing-box"
 exec "$DIR/jre/bin/java" -XstartOnFirstThread \
+  --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
+  --add-opens=java.base/java.io=ALL-UNNAMED \
   -cp "$DIR/app/*:$DIR/app/lib/*" pro.wingerapp.vpn.MainKt "$@"
 LAUNCH
 chmod +x "$APP/Contents/MacOS/WingerVPN"

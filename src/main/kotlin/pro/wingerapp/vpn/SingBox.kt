@@ -268,6 +268,49 @@ private fun coreLog(path: String?): JSONObject =
  * как Happ/Incy. Транспорт собирается в минимальном виде: один неизвестный
  * ключ XHTTP уронил бы ядро на старте всего конфига.
  */
+/**
+ * Домены шлюзов, с которыми работает прослойка LTE4/LTE5.
+ *
+ * Их трафик должен идти мимо туннеля: на macOS в tun попадает всё, включая
+ * собственные POST/WSS прослойки. Без исключения запрос идёт в прокси, который
+ * сам же является этой прослойкой — получается петля, соединения рвутся по
+ * таймауту (именно это и видно в логе LTE5 на macOS). На Android петли нет:
+ * там сокеты прослойки защищены через VpnService.protect().
+ */
+internal fun shimHosts(rawSubscription: String): List<String> {
+    val configs = runCatching { JSONArray(rawSubscription) }.getOrNull() ?: return emptyList()
+    val hosts = LinkedHashSet<String>()
+    for (i in 0 until configs.length()) {
+        val cfg = configs.optJSONObject(i) ?: continue
+        val outbounds = cfg.optJSONArray("outbounds") ?: continue
+        for (j in 0 until outbounds.length()) {
+            val out = outbounds.optJSONObject(j) ?: continue
+            val stream = out.optJSONObject("streamSettings") ?: continue
+            val network = stream.optString("network").ifBlank { "tcp" }
+            val vnext = out.optJSONObject("settings")?.optJSONArray("vnext")?.optJSONObject(0) ?: continue
+            val address = vnext.optString("address")
+            if (address.isBlank()) continue
+            val wsPath = stream.optJSONObject("wsSettings")?.optString("path").orEmpty()
+            val lte4 = network == "ws" && Lte4.isLte4Gateway(address) && Lte4.isGatewayPath(wsPath)
+            val xhttp = stream.optJSONObject("xhttpSettings")
+            val extra = xhttp?.optJSONObject("extra")
+            val extraValues = HashMap<String, Any?>()
+            if (extra != null) {
+                val keys = extra.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    extraValues[key] = extra.opt(key)
+                }
+            }
+            val lte5 = network in setOf("xhttp", "splithttp") &&
+                PostChunkParams.isPostChunksHost(address) &&
+                PostChunkParams.isPostChunksMode(xhttp?.optString("mode").orEmpty(), extraValues)
+            if (lte4 || lte5) hosts += address
+        }
+    }
+    return hosts.toList()
+}
+
 internal fun measurementOutbounds(
     rawSubscription: String,
     selected: String,

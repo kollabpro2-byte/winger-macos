@@ -415,6 +415,35 @@ object TunnelController {
         } else {
             pingTags = emptyMap()
         }
+
+        // Шлюзы прослойки LTE4/LTE5 — напрямую, иначе на macOS её собственные
+        // запросы уходят в туннель и замыкаются на этот же прокси.
+        val gateways = if (raw.isBlank()) emptyList() else shimHosts(raw)
+        if (gateways.isNotEmpty()) {
+            val route = base.getJSONObject("route")
+            val old = route.getJSONArray("rules")
+            // Важно: правило должно идти ПОСЛЕ sniff/hijack-dns. Если поставить
+            // его первым, домен ещё не определён (трафик приходит на IP) и
+            // совпадения нет — запрос снова ушёл бы в прокси.
+            val hostRule = JSONObject()
+                .put("action", "route")
+                .put("outbound", "direct")
+                .put("domain", org.json.JSONArray(gateways))
+            val rules = org.json.JSONArray()
+            var inserted = false
+            for (i in 0 until old.length()) {
+                val rule = old.getJSONObject(i)
+                val routes = rule.has("outbound") || rule.has("rule_set") || rule.has("ip_cidr")
+                if (!inserted && routes) {
+                    rules.put(hostRule)
+                    inserted = true
+                }
+                rules.put(rule)
+            }
+            if (!inserted) rules.put(hostRule)
+            route.put("rules", rules)
+            VpnLog.add("шлюзы прослойки напрямую: ${gateways.size}")
+        }
         base.put(
             "experimental",
             JSONObject().put(

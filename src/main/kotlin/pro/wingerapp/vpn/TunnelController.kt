@@ -84,6 +84,22 @@ object TunnelController {
                 // Установлен системный компонент (root-демон/задача планировщика):
                 // tun поднимает он, а приложение только передаёт конфиг. Тогда
                 // Cmd+Q и перезапуск приложения туннель не рвут.
+                //
+                // Если компонента ещё нет — ставим его прямо сейчас: один запрос
+                // пароля при первом включении, как у Happ/Incy. Отказ не мешает:
+                // ниже сработает обычный прокси-режим.
+                if (!usePrivileged() && Store.desktopTun() && PrivilegedTunnel.isSupported() &&
+                    !PrivilegedTunnel.isInstalled()
+                ) {
+                    VpnLog.add("первый запуск: установка системного режима")
+                    val error = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                        runCatching { PrivilegedTunnel.install(coreBinary()) }.getOrElse { it.message }
+                    }
+                    if (error != null) {
+                        VpnLog.add("системный режим не установлен: $error")
+                    }
+                }
+
                 if (usePrivileged()) {
                     startPrivileged(xrayJson, gen)
                     return@launch

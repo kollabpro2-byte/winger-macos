@@ -57,7 +57,14 @@ internal fun SettingsTab(onApply: () -> Unit) {
     var clearMin by remember { mutableStateOf(Store.logClearMinutes()) }
     // Берём то, что пользователь оставил в прошлый раз; если ещё не трогал —
     // раскрыт только «Отображение».
-    var open by remember { mutableStateOf(Store.openSections() ?: setOf("theme")) }
+    // Раздел системного режима раскрыт, пока компонент не установлен: иначе
+    // пользователь просто не видит, что для tun нужен один пароль.
+    var open by remember {
+        mutableStateOf(
+            Store.openSections()
+                ?: if (PrivilegedTunnel.isInstalled()) setOf("theme") else setOf("theme", "sys"),
+        )
+    }
     // Системный режим: установлен ли демон и не идёт ли установка сейчас.
     var sysInstalled by remember { mutableStateOf(PrivilegedTunnel.isInstalled()) }
     var sysBusy by remember { mutableStateOf(false) }

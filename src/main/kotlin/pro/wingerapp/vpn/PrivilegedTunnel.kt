@@ -96,6 +96,17 @@ object PrivilegedTunnel {
 
     // --- macOS ---------------------------------------------------------------------
 
+    /**
+     * Команда, которую macOS выполнит от root после ввода пароля.
+     *
+     * Отдельная функция ради теста: здесь важно экранирование — путь попадает
+     * и в `shasum`, и в `/bin/sh`, а кавычки внутри AppleScript-строки должны
+     * остаться кавычками для shell.
+     */
+    internal fun macAdminCommand(scriptPath: String, hash: String): String =
+        "H=$(shasum -a 256 '$scriptPath' | cut -d' ' -f1); " +
+            "[ \"\$H\" = \"$hash\" ] && /bin/sh '$scriptPath' || echo 'hash mismatch'"
+
     private fun installMac(corePath: File): String? {
         if (!corePath.exists()) return "ядро не найдено: ${corePath.absolutePath}"
         val script = File.createTempFile("winger-install-", ".sh")
@@ -110,9 +121,7 @@ object PrivilegedTunnel {
 
         // Хеш закрывает окно подмены файла между записью и запуском от root:
         // команда сначала сверяет SHA-256 и только потом исполняет.
-        val sum = sha256(script.readBytes())
-        val command = "H=$(shasum -a 256 '${script.absolutePath}' | cut -d' ' -f1); " +
-            "[ \"\$H\" = \"$sum\" ] && /bin/sh '${script.absolutePath}' || echo 'hash mismatch'"
+        val command = macAdminCommand(script.absolutePath, sha256(script.readBytes()))
         val result = runAdmin(command)
         script.delete()
         val error = result.errorOrNull()

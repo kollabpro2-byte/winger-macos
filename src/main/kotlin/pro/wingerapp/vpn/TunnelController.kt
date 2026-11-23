@@ -39,13 +39,30 @@ object TunnelController {
     @Volatile
     private var generation = 0
 
-    /** Локальный порт прокси-режима, когда тун недоступен без прав администратора. */
-    internal val proxyPort = 2080
+    /**
+     * Порты выбираются при старте: если 2080/9090 заняты (например, осталось
+     * ядро от прошлого запуска), берём свободные. Фиксированные порты хороши
+     * тем, что их знает пользователь, поэтому предпочитаем их.
+     */
+    @Volatile
+    internal var mixedPort = 2080
+        private set
 
-    /** Clash API ядра: через него UI получает реальные байты туннеля. */
-    private val clashPort = 9090
+    @Volatile
+    private var clashPort = 9090
 
-    val corePath: File = Platform.file(if (Platform.isWindows) "sing-box.exe" else "sing-box")
+    private val corePath: File = Platform.file(if (Platform.isWindows) "sing-box.exe" else "sing-box")
+
+    init {
+        // При выходе (в том числе Cmd+Q, где onCloseRequest не вызывается)
+        // дочерний процесс ядра не должен оставаться жить со своим tun.
+        Runtime.getRuntime().addShutdownHook(
+            Thread({
+                runCatching { shim?.stop() }
+                runCatching { core?.destroy() }
+            }, "winger-shutdown"),
+        )
+    }
 
     fun isRunning(): Boolean = core?.isAlive == true
 
@@ -59,12 +76,17 @@ object TunnelController {
         scope.launch {
             try {
                 stopInternal(notify = false)
+                // Ядро могло остаться от прошлого запуска (Cmd+Q, падение) и
+                // держать порты; иначе новый процесс упадёт с bind: in use.
+                killStaleCore()
+                mixedPort = freePort(2080)
+                clashPort = freePort(9090)
 
                 val shimPort = startShim()
                 val config = coreConfig(xrayJson, shimPort)
                 val path = Platform.file("core.json")
                 path.writeText(config)
-                VpnLog.add("старт sing-box, конфиг ${config.length} байт")
+                VpnLog.add("старт sing-box, конфиг ${config.length} байт, прокси 127.0.0.1:$mixedPort")
 
                 val binary = resolveBinary()
                 val process = ProcessBuilder(binary.absolutePath, "run", "-c", path.absolutePath)
@@ -139,6 +161,53 @@ object TunnelController {
     }
 
     /**
+     * Гасит ядра, оставшиеся от прошлых запусков.
+     *
+     * Дочерний процесс не умирает вместе с JVM, если приложение закрыли
+     * принудительно (Cmd+Q, падение, kill -9). Такое ядро держит 127.0.0.1:2080
+     * и 9090, и следующий старт падает с «bind: address already in use».
+     * Ищем только процессы sing-box, запущенные с нашим конфигом.
+     */
+    private fun killStaleCore() {
+        val ourConfig = Platform.file("core.json").absolutePath
+        val stale = runCatching {
+            ProcessHandle.allProcesses()
+                .filter { handle ->
+                    val info = handle.info()
+                    val command = info.command().orElse("")
+                    val args = info.arguments().orElse(emptyArray<String>())
+                    command.contains("sing-box") &&
+                        (args.any { it.contains(ourConfig) } ||
+                            info.commandLine().orElse("").contains(ourConfig))
+                }
+                .filter { it.pid() != ProcessHandle.current().pid() }
+                .toList()
+        }.getOrDefault(emptyList())
+
+        if (stale.isEmpty()) return
+        stale.forEach { runCatching { it.destroy() } }
+        VpnLog.add("остановлено прежних ядер: ${stale.size}")
+
+        // Дать портам освободиться: сразу после destroy bind может не пройти.
+        val deadline = System.currentTimeMillis() + 2_000
+        while (System.currentTimeMillis() < deadline && stale.any { it.isAlive }) {
+            Thread.sleep(100)
+        }
+        stale.filter { it.isAlive }.forEach { runCatching { it.destroyForcibly() } }
+    }
+
+    /** Свободный порт: сначала предпочтительный, иначе любой свободный. */
+    private fun freePort(preferred: Int): Int {
+        fun canBind(port: Int): Boolean = runCatching {
+            java.net.ServerSocket(port, 8, java.net.InetAddress.getByName("127.0.0.1")).use { true }
+        }.getOrDefault(false)
+        if (canBind(preferred)) return preferred
+        return runCatching {
+            java.net.ServerSocket(0, 8, java.net.InetAddress.getByName("127.0.0.1")).use { it.localPort }
+        }.getOrDefault(preferred)
+    }
+
+    /**
      * Конфиг ядра: сначала полноценный тун (весь трафик системы), при отсутствии
      * прав — локальный прокси, чтобы приложение всё же работало.
      */
@@ -184,7 +253,7 @@ object TunnelController {
             .put("type", "mixed")
             .put("tag", "mixed-in")
             .put("listen", "127.0.0.1")
-            .put("listen_port", proxyPort)
+            .put("listen_port", mixedPort)
     }
 
     /**

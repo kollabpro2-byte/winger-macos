@@ -82,14 +82,14 @@ fun HomeScreen(
         }
     }
 
-    // Пинги обновляем, когда туннель выключен: только тогда TCP-замер честный.
-    LaunchedEffect(on) {
-        if (!on) vm.refresh(ping = true)
-    }
+    // Пинги считаем по уже загруженному списку, без обращения к панели:
+    // при включённом туннеле — только выбранный сервер (через ядро), при
+    // выключенном — все. Раз в 5 минут обновляем, чтобы числа не застывали.
+    LaunchedEffect(on) { vm.refreshPings() }
     LaunchedEffect(on) {
         while (true) {
             delay(5 * 60 * 1000L)
-            if (!on && AppVisibility.visible) vm.refresh(ping = true)
+            if (AppVisibility.visible) vm.refreshPings()
         }
     }
 

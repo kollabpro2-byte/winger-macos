@@ -336,6 +336,22 @@ class AppViewModel {
         }
     }
 
+    /**
+     * Пересчитывает пинги по уже загруженному списку — без сети и подписки.
+     *
+     * Нужен, когда подписка не обновилась (нет сети, панель недоступна), но
+     * серверы уже есть в кэше: иначе список пингов оставался старым.
+     */
+    fun refreshPings() {
+        val snapshot = _state.value
+        if (snapshot.servers.isEmpty()) return
+        scope.launch {
+            _state.update { it.copy(pinging = true) }
+            runCatching { pingAll(SubConfig(snapshot.raw, snapshot.servers)) }
+            _state.update { it.copy(pinging = false) }
+        }
+    }
+
     private suspend fun pingAll(parsed: SubConfig) {
         // Туннель включён: прямой TCP-пинг врёт (~1 мс, рукопожатие завершает
         // локальный стек ядра). Честно измеряем только выбранный сервер —

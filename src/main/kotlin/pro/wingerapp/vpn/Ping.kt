@@ -41,6 +41,32 @@ fun tcpPing(host: String, port: Int, attempts: Int = 2): Int? {
     return best
 }
 
+/**
+ * Задержка через ядро: Clash API `/proxies/{tag}/delay`.
+ *
+ * Зачем: при включённом tun TCP-рукопожатие завершает локальный стек ядра
+ * (gvisor), поэтому прямой `tcpPing` из приложения даёт ~1 мс у любого сервера —
+ * это честное время до ядра, а не до сервера. Здесь запрос реально проходит
+ * через выбранный outbound до `generate_204`, и число отражает путь до сервера.
+ */
+fun coreDelay(
+    proxyTag: String = "proxy",
+    timeoutMs: Int = 3000,
+    url: String = "https://www.gstatic.com/generate_204",
+): Int? = runCatching {
+    val encoded = java.net.URLEncoder.encode(url, "UTF-8")
+    val connection = (
+        java.net.URL("http://127.0.0.1:9090/proxies/$proxyTag/delay?timeout=$timeoutMs&url=$encoded")
+            .openConnection() as java.net.HttpURLConnection
+        )
+    connection.connectTimeout = 1_500
+    connection.readTimeout = timeoutMs + 1_500
+    connection.requestMethod = "GET"
+    if (connection.responseCode !in 200..299) return null
+    val body = connection.inputStream.bufferedReader().readText()
+    org.json.JSONObject(body).optInt("delay", -1).takeIf { it > 0 }
+}.getOrNull()
+
 private const val CONNECT_TIMEOUT_MS = 1200
 private const val IP_TTL_MS = 10L * 60L * 1000L
 private const val FAST_ENOUGH_MS = 120

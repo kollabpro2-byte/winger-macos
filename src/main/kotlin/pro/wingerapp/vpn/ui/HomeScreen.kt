@@ -82,6 +82,17 @@ fun HomeScreen(
         }
     }
 
+    // Пинги обновляем, когда туннель выключен: только тогда TCP-замер честный.
+    LaunchedEffect(on) {
+        if (!on) vm.refresh(ping = true)
+    }
+    LaunchedEffect(on) {
+        while (true) {
+            delay(5 * 60 * 1000L)
+            if (!on && AppVisibility.visible) vm.refresh(ping = true)
+        }
+    }
+
     LaunchedEffect(Unit) {
         while (true) {
             delay(60 * 60 * 1000L)

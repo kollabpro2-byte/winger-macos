@@ -360,34 +360,51 @@ private fun Orb(on: Boolean, hint: String, onToggle: () -> Unit) {
 private enum class StatKind { Clock, Phone, Traffic }
 
 /** Три показателя одной строкой: значок в плашке, подпись, значение. */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 private fun StatsRow(days: String, devices: String, traffic: String) {
     val s = rememberStrings()
+    // На большом окне карточка не должна выглядеть мелкой: телефонные 11.7 sp на
+    // 1400 px читаются плохо, поэтому подписи и значения растут с шириной.
+    val widthDp = with(LocalDensity.current) {
+        LocalWindowInfo.current.containerSize.width / density
+    }
+    val scale = when {
+        widthDp >= 1200f -> 1.35f
+        widthDp >= 900f -> 1.2f
+        else -> 1f
+    }
     Row(
-        Modifier.fillMaxWidth().padding(top = 14.dp).clip(RoundedCornerShape(18.dp))
+        Modifier.fillMaxWidth().padding(top = (14f * scale).dp).clip(RoundedCornerShape(18.dp))
             .background(Elev).border(1.dp, CardLine, RoundedCornerShape(18.dp))
-            .padding(vertical = 5.4.dp, horizontal = 2.dp),
+            .padding(vertical = (5.4f * scale).dp, horizontal = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // В светлой теме неоновые сиреневый и циан на белой карточке бледнеют.
         val c1 = if (AppTheme.p.isLight) Color(0xFF0E7490) else Color(0xFF22D3EE)
         val c2 = if (AppTheme.p.isLight) Color(0xFF7C3AED) else Color(0xFFC084FC)
         val c3 = if (AppTheme.p.isLight) Color(0xFF2563EB) else Color(0xFF7FB0FF)
-        Stat(Modifier.weight(1f), StatKind.Clock, c1, c1.copy(alpha = .12f), s[R.string.home_days_left], days)
-        VDivider()
-        Stat(Modifier.weight(1f), StatKind.Phone, c2, c2.copy(alpha = .14f), s[R.string.home_devices_label], devices)
-        VDivider()
-        Stat(Modifier.weight(1f), StatKind.Traffic, c3, c3.copy(alpha = .14f), s[R.string.home_traffic_label], traffic, unit = s[R.string.fmt_gb_unit])
+        Stat(Modifier.weight(1f), StatKind.Clock, c1, c1.copy(alpha = .12f), s[R.string.home_days_left], days, scale = scale)
+        VDivider(scale)
+        Stat(Modifier.weight(1f), StatKind.Phone, c2, c2.copy(alpha = .14f), s[R.string.home_devices_label], devices, scale = scale)
+        VDivider(scale)
+        Stat(
+            Modifier.weight(1f), StatKind.Traffic, c3, c3.copy(alpha = .14f),
+            s[R.string.home_traffic_label], traffic, unit = s[R.string.fmt_gb_unit], scale = scale,
+        )
     }
 }
 
 @Composable
-private fun VDivider() {
-    Box(Modifier.width(1.dp).height(26.dp).background(Line))
+private fun VDivider(scale: Float = 1f) {
+    Box(Modifier.width(1.dp).height((26f * scale).dp).background(Line))
 }
 
 @Composable
-private fun Stat(modifier: Modifier, kind: StatKind, tint: Color, bg: Color, label: String, value: String, unit: String? = null) {
+private fun Stat(
+    modifier: Modifier, kind: StatKind, tint: Color, bg: Color, label: String, value: String,
+    unit: String? = null, scale: Float = 1f,
+) {
     // Значение делим на число и «хвост»: «436 дней» → «436» + мелкое «дней»,
     // «285 ГБ» → «285» + мелкое «ГБ». Если в хвосте есть цифры («2 из 3»),
     // не делим — иначе получилось бы «2» + «из 3» мелким.
@@ -397,18 +414,24 @@ private fun Stat(modifier: Modifier, kind: StatKind, tint: Color, bg: Color, lab
     val suffix = unit ?: tail?.takeIf { it.none { ch -> ch.isDigit() } }
     val whole = if (suffix == null) value.trim() else number
 
-    Row(modifier.padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(22.dp).clip(RoundedCornerShape(8.dp)).background(bg), contentAlignment = Alignment.Center) {
+    Row(modifier.padding(horizontal = (6f * scale).dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier.size((22f * scale).dp).clip(RoundedCornerShape((8f * scale).dp)).background(bg),
+            contentAlignment = Alignment.Center,
+        ) {
             StatIcon(kind, tint)
         }
-        Column(Modifier.padding(start = 6.dp).weight(1f)) {
+        Column(Modifier.padding(start = (6f * scale).dp).weight(1f)) {
             // Подписи крупнее на 30 % (9 → 11.7 sp), разрядка убрана: иначе
             // «устройства» не влезает и подгонка уменьшала бы всю ячейку.
-            Text(label, color = Muted, fontSize = 11.7.sp, letterSpacing = .1.sp, maxLines = 1, overflow = TextOverflow.Clip)
+            Text(
+                label, color = Muted, fontSize = (11.7f * scale).sp,
+                letterSpacing = .1.sp, maxLines = 1, overflow = TextOverflow.Clip,
+            )
             BoxWithConstraints(Modifier.fillMaxWidth()) {
                 // Кегль подбирается по ширине ячейки: на узких экранах и при
                 // крупных числах значение уменьшается, а не обрезается.
-                val size = fitValueSize(whole, suffix, maxWidth, 12.5.sp, 8.sp)
+                val size = fitValueSize(whole, suffix, maxWidth, (12.5f * scale).sp, (8f * scale).sp)
                 Row {
                     Text(
                         whole, color = TextMain, fontSize = size, fontWeight = FontWeight.SemiBold,

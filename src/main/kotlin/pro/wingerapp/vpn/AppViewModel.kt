@@ -337,6 +337,21 @@ class AppViewModel {
     }
 
     private suspend fun pingAll(parsed: SubConfig) {
+        // Туннель включён: прямой TCP-пинг врёт (~1 мс, рукопожатие завершает
+        // локальный стек ядра). Честно измеряем только выбранный сервер —
+        // запросом через ядро; для остальных показываем «—», а не выдуманное 1.
+        if (TunnelState.running.value) {
+            val selected = _state.value.selected
+            val delay = withContext(Dispatchers.IO) { runCatching { coreDelay() }.getOrNull() }
+            _state.update { state ->
+                state.copy(pings = parsed.servers.associate { node ->
+                    node.name to if (node.name == selected) delay else null
+                })
+            }
+            VpnLog.add("пинг через туннель: ${delay?.let { "$it мс" } ?: "нет ответа"}")
+            return
+        }
+
         // Три ограничения, которых раньше не было:
         //  1) не больше 5 одновременных TCP-подключений (Semaphore) — иначе на
         //     подписке в 50 серверов телефон открывал 50 сокетов разом;

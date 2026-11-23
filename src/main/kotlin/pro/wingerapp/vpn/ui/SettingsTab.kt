@@ -28,6 +28,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import pro.wingerapp.vpn.BuildConfig
 import pro.wingerapp.vpn.Platform
+import pro.wingerapp.vpn.PrivilegedTunnel
+import pro.wingerapp.vpn.TunnelController
 import pro.wingerapp.vpn.R
 import pro.wingerapp.vpn.Store
 import pro.wingerapp.vpn.VpnLog
@@ -56,6 +58,10 @@ internal fun SettingsTab(onApply: () -> Unit) {
     // Берём то, что пользователь оставил в прошлый раз; если ещё не трогал —
     // раскрыт только «Отображение».
     var open by remember { mutableStateOf(Store.openSections() ?: setOf("theme")) }
+    // Системный режим: установлен ли демон и не идёт ли установка сейчас.
+    var sysInstalled by remember { mutableStateOf(PrivilegedTunnel.isInstalled()) }
+    var sysBusy by remember { mutableStateOf(false) }
+    var sysError by remember { mutableStateOf<String?>(null) }
 
     fun toggle(id: String) {
         open = if (id in open) open - id else open + id
@@ -97,6 +103,58 @@ internal fun SettingsTab(onApply: () -> Unit) {
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp), singleLine = true,
                 colors = fieldColors(),
             )
+        }
+
+        SettingsSection("СИСТЕМНЫЙ РЕЖИМ", "sys" in open, onToggle = { toggle("sys") }) {
+            Text(
+                "Туннель на весь трафик. Установка один раз попросит пароль администратора," +
+                    " дальше включение работает без пароля — как в Happ и Incy.",
+                color = Muted, fontSize = 11.sp,
+            )
+            Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    sysError ?: if (sysInstalled) "Установлен" else "Не установлен",
+                    color = if (sysInstalled) Purple else Muted,
+                    fontSize = 12.sp,
+                    modifier = Modifier.weight(1f),
+                )
+                Box(
+                    Modifier.clip(RoundedCornerShape(12.dp))
+                        .background(Purple.copy(alpha = if (sysBusy) .12f else .22f))
+                        .clickable(enabled = !sysBusy) {
+                            sysBusy = true
+                            sysError = null
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) {
+                                    if (sysInstalled) PrivilegedTunnel.uninstall()
+                                    else PrivilegedTunnel.install(TunnelController.coreBinary())
+                                }
+                                sysBusy = false
+                                sysInstalled = PrivilegedTunnel.isInstalled()
+                                sysError = result
+                                if (result == null) onApply()
+                            }
+                        }
+                        .padding(horizontal = 14.dp, vertical = 9.dp),
+                ) {
+                    Text(
+                        when {
+                            sysBusy -> "…"
+                            sysInstalled -> "Удалить"
+                            else -> "Установить"
+                        },
+                        color = OnAccent, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+            if (sysInstalled) {
+                Text(
+                    "VPN поднимает системный демон: работает до выключения и переживает" +
+                        " перезапуск приложения.",
+                    color = Muted, fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
         }
 
         SettingsSection(s[R.string.set_connection], "conn" in open, onToggle = { toggle("conn") }) {

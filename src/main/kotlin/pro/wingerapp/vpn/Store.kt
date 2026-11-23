@@ -236,7 +236,9 @@ object Store {
             "proxy" -> return false
             "tun" -> return true
         }
-        return getBool("desktopTun", Platform.isWindows)
+        // Установленный системный компонент умеет tun сам — он и есть основной путь.
+        if (PrivilegedTunnel.isInstalled()) return true
+        return getBool("desktopTun", Platform.isWindows || Platform.isMac)
     }
 
     fun desktopTun(on: Boolean) = put("desktopTun", on.toString())

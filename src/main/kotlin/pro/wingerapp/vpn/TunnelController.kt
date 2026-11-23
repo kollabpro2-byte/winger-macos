@@ -35,6 +35,10 @@ object TunnelController {
     @Volatile
     private var trafficJob: Job? = null
 
+    /** Текущая сессия поднята системным демоном, а не нашим процессом. */
+    @Volatile
+    private var privilegedActive = false
+
     /** Номер попытки: поздние колбэки старой сессии не должны трогать новую. */
     @Volatile
     private var generation = 0
@@ -76,17 +80,30 @@ object TunnelController {
         scope.launch {
             try {
                 stopInternal(notify = false)
-                // Ядро могло остаться от прошлого запуска (Cmd+Q, падение) и
-                // держать порты; иначе новый процесс упадёт с bind: in use.
+
+                // Установлен системный компонент (root-демон/задача планировщика):
+                // tun поднимает он, а приложение только передаёт конфиг. Тогда
+                // Cmd+Q и перезапуск приложения туннель не рвут.
+                if (usePrivileged()) {
+                    startPrivileged(xrayJson, gen)
+                    return@launch
+                }
+
+                // Иначе — свой процесс. Ядро могло остаться от прошлого запуска
+                // (Cmd+Q, падение) и держать порты; иначе будет bind: in use.
                 killStaleCore()
                 mixedPort = freePort(2080)
                 clashPort = freePort(9090)
 
                 val shimPort = startShim()
-                val config = coreConfig(xrayJson, shimPort)
+                val tun = processTun()
+                val config = coreConfig(xrayJson, shimPort, tun)
                 val path = Platform.file("core.json")
                 path.writeText(config)
-                VpnLog.add("старт sing-box, конфиг ${config.length} байт, прокси 127.0.0.1:$mixedPort")
+                VpnLog.add(
+                    "старт sing-box, конфиг ${config.length} байт, " +
+                        if (tun) "режим tun" else "прокси 127.0.0.1:$mixedPort",
+                )
 
                 val binary = resolveBinary()
                 val process = ProcessBuilder(binary.absolutePath, "run", "-c", path.absolutePath)
@@ -119,12 +136,41 @@ object TunnelController {
         }
     }
 
+    /**
+     * Восстанавливает туннель после запуска приложения.
+     *
+     * Если системный демон уже держит туннель (приложение закрывали при
+     * работающем VPN), процесс не поднимаем заново — только возвращаем состояние
+     * и счётчики. Иначе стартуем сохранённый конфиг.
+     */
+    fun resumeSaved() {
+        if (!Store.running()) return
+        val config = Store.lastConfig()
+        if (config.isBlank()) return
+
+        val privilegedOn = PrivilegedTunnel.isInstalled() &&
+            PrivilegedTunnel.controlFile.let { it.exists() && it.readText().trim() == "on" }
+        if (privilegedOn) {
+            privilegedActive = true
+            TunnelState.serviceAlive = true
+            TunnelState.on()
+            startTrafficPolling(generation)
+            VpnLog.add("туннель уже работает в системном демоне")
+            return
+        }
+        start(config)
+    }
+
     fun stop() {
         generation++
         scope.launch { stopInternal(notify = true) }
     }
 
     private suspend fun stopInternal(notify: Boolean) {
+        if (privilegedActive) {
+            PrivilegedTunnel.stop()
+            privilegedActive = false
+        }
         trafficJob?.cancel()
         trafficJob = null
         runCatching { shim?.stop() }
@@ -159,6 +205,9 @@ object TunnelController {
         VpnLog.add("прослойка не поднялась: ${error.message}")
         0
     }
+
+    /** Путь к ядру: нужен установщику системного режима. */
+    internal fun coreBinary(): File = resolveBinary()
 
     /**
      * Гасит ядра, оставшиеся от прошлых запусков.
@@ -207,11 +256,69 @@ object TunnelController {
         }.getOrDefault(preferred)
     }
 
+    /** Системный компонент установлен и tun включён в настройках. */
+    private fun usePrivileged(): Boolean =
+        PrivilegedTunnel.isSupported() && PrivilegedTunnel.isInstalled() && Store.desktopTun()
+
+    /**
+     * Может ли наш собственный процесс поднять tun: на Windows он запускается
+     * из run.bat с повышением прав, на macOS — только через `sudo` с
+     * `WINGER_MODE=tun`. Иначе это прокси-режим.
+     */
+    private fun processTun(): Boolean = when {
+        !Store.desktopTun() -> false
+        System.getenv("WINGER_MODE").equals("proxy", ignoreCase = true) -> false
+        else -> Platform.isWindows || System.getenv("WINGER_MODE").equals("tun", ignoreCase = true)
+    }
+
+    /**
+     * Поднимает туннель через системный компонент.
+     *
+     * Локальная прослойка LTE4 остаётся в нашем процессе: ядро от root
+     * подключается к 127.0.0.1:<порт> так же, как обычное приложение.
+     */
+    private suspend fun startPrivileged(xrayJson: String, gen: Int) {
+        val shimPort = startShim()
+        val config = coreConfig(xrayJson, shimPort, useTun = true)
+        PrivilegedTunnel.configFile.writeText(config)
+        PrivilegedTunnel.start()
+        privilegedActive = true
+        Store.running(true)
+        Store.lastConfig(xrayJson)
+        TunnelState.serviceAlive = true
+        TunnelState.on()
+        CoreTraffic.reset()
+        startTrafficPolling(gen)
+
+        // Демон не возвращает код: проверяем, что ядро реально слушает API.
+        delay(2_500)
+        if (gen != generation) return
+        if (!clashAlive()) {
+            VpnLog.add("системный туннель не ответил на Clash API")
+            PrivilegedTunnel.stop()
+            privilegedActive = false
+            TunnelState.fail("системный туннель не поднялся, подробности в логе")
+            Store.running(false)
+            TunnelState.serviceAlive = false
+        } else {
+            VpnLog.add("системный туннель поднят: tun, весь трафик")
+        }
+    }
+
+    /** Отвечает ли Clash API ядра (признак, что ядро живое). */
+    private fun clashAlive(): Boolean = runCatching {
+        (URL("http://127.0.0.1:9090/connections").openConnection() as HttpURLConnection).run {
+            connectTimeout = 1_500
+            readTimeout = 1_500
+            responseCode in 200..299
+        }
+    }.getOrDefault(false)
+
     /**
      * Конфиг ядра: сначала полноценный тун (весь трафик системы), при отсутствии
      * прав — локальный прокси, чтобы приложение всё же работало.
      */
-    internal fun coreConfig(xrayJson: String, shimPort: Int): String {
+    internal fun coreConfig(xrayJson: String, shimPort: Int, useTun: Boolean): String {
         val options = TunnelOptions(
             dnsServer = Store.dnsServer(),
             directDomains = Store.bypass(),
@@ -224,7 +331,7 @@ object TunnelController {
             ipv6Proxy = Store.ipv6Proxy(),
         )
         val base = JSONObject(toSingBox(xrayJson, options))
-        base.put("inbounds", org.json.JSONArray().put(inbound()))
+        base.put("inbounds", org.json.JSONArray().put(inbound(useTun)))
         base.put(
             "experimental",
             JSONObject().put(
@@ -238,7 +345,7 @@ object TunnelController {
     }
 
     /** tun — как на телефоне; mixed — запасной путь без прав администратора. */
-    private fun inbound(): JSONObject = if (Store.desktopTun()) {
+    private fun inbound(useTun: Boolean): JSONObject = if (useTun) {
         JSONObject()
             .put("type", "tun")
             .put("tag", "tun-in")

@@ -44,6 +44,11 @@ object Snapshot {
             }
             render(File(dir, "home-off-$mode.png")) { demoHome(on = false) }
             render(File(dir, "home-on-$mode.png")) { demoHome(on = true) }
+            if (mode == "mid") {
+                render(File(dir, "settings-$mode.png")) {
+                    pro.wingerapp.vpn.ui.SettingsTab(onApply = {})
+                }
+            }
         }
         AppTheme.mode = AppTheme.fromStored(Store.themeMode())
         println("снимки: ${dir.absolutePath}")

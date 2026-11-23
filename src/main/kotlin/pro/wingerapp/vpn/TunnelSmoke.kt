@@ -16,7 +16,6 @@ object TunnelSmoke {
     fun enabled(): Boolean = System.getenv("WINGER_SMOKE") == "1"
 
     fun run(): Unit = runBlocking {
-        Store.desktopTun(false) // на CI нет прав администратора
         TunnelController.start(ConfigDump.DEMO_XRAY)
         delay(6_000)
 

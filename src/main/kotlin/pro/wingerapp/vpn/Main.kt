@@ -55,6 +55,10 @@ fun main() {
     val vm = AppViewModel()
     val hwid = DesktopHwid.value()
 
+    // VPN мог остаться включённым с прошлого запуска (особенно через системный
+    // демон) — возвращаем состояние до открытия окна, чтобы UI не мигал «выкл».
+    TunnelController.resumeSaved()
+
     application {
         val state = rememberWindowState(
             width = 420.dp,

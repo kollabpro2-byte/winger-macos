@@ -39,7 +39,9 @@ object Diag {
      * (TLS, dial, DNS) не видны в интерфейсе.
      */
     fun harvestCoreLog(rotate: Boolean) {
-        val core = Platform.file("singbox.log")
+        // В системном режиме ядро пишет журнал в системный каталог (от root).
+        val system = java.io.File("/Library/Application Support/WingerVPN/singbox.log")
+        val core = if (system.exists()) system else Platform.file("singbox.log")
         if (!core.exists()) return
         runCatching {
             val text = core.readText().takeLast(6_000)

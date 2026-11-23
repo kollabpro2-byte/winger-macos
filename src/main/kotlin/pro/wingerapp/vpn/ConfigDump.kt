@@ -14,7 +14,9 @@ object ConfigDump {
     fun enabled(): Boolean = !System.getenv("WINGER_DUMP_CONFIG").isNullOrBlank()
 
     fun run(path: String) {
-        val config = TunnelController.coreConfig(DEMO_XRAY, shimPort = 0, useTun = false)
+        // WINGER_DUMP_TUN=1 — выгрузить конфиг системного режима (tun).
+        val tun = System.getenv("WINGER_DUMP_TUN") == "1"
+        val config = TunnelController.coreConfig(DEMO_XRAY, shimPort = 0, useTun = tun, privileged = tun)
         File(path).writeText(config)
         println("конфиг записан: $path (${config.length} байт)")
     }

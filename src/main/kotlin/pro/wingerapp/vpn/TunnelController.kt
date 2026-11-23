@@ -306,9 +306,26 @@ object TunnelController {
      * подключается к 127.0.0.1:<порт> так же, как обычное приложение.
      */
     private suspend fun startPrivileged(xrayJson: String, gen: Int) {
+        // Права на файл состояния могли остаться от старой версии установщика
+        // (файл создан root'ом). Тогда переустанавливаем компонент — один пароль.
+        if (!PrivilegedTunnel.canControl()) {
+            VpnLog.add("нет прав на файл состояния — повторная установка системного режима")
+            val error = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                runCatching { PrivilegedTunnel.install(coreBinary()) }.getOrElse { it.message }
+            }
+            if (error != null || !PrivilegedTunnel.canControl()) {
+                TunnelState.fail(error ?: "нет прав на файл состояния системного режима")
+                return
+            }
+        }
+
         val shimPort = startShim()
-        val config = coreConfig(xrayJson, shimPort, useTun = true)
+        val config = coreConfig(xrayJson, shimPort, useTun = true, privileged = true)
         PrivilegedTunnel.configFile.writeText(config)
+        // Гасим и поднимаем заново: демон держит уже запущенное ядро и сам
+        // конфиг не перечитывает, иначе остался бы старый сервер.
+        PrivilegedTunnel.stop()
+        delay(700)
         PrivilegedTunnel.start()
         privilegedActive = true
         Store.running(true)
@@ -346,14 +363,14 @@ object TunnelController {
      * Конфиг ядра: сначала полноценный тун (весь трафик системы), при отсутствии
      * прав — локальный прокси, чтобы приложение всё же работало.
      */
-    internal fun coreConfig(xrayJson: String, shimPort: Int, useTun: Boolean): String {
+    internal fun coreConfig(xrayJson: String, shimPort: Int, useTun: Boolean, privileged: Boolean = false): String {
         val options = TunnelOptions(
             dnsServer = Store.dnsServer(),
             directDomains = Store.bypass(),
             subRouting = if (Store.subRouting()) RoutingPlan.RULES_AND_DNS else RoutingPlan.OFF,
             useMux = Store.useMux(),
             mtu = if (Store.mtuLow()) 1280 else 1500,
-            coreLogFile = Platform.file("singbox.log").absolutePath,
+            coreLogFile = coreLogPath(privileged),
             cacheFile = Platform.file("cache.db").absolutePath,
             shimPort = shimPort,
             ipv6Proxy = Store.ipv6Proxy(),
@@ -373,6 +390,15 @@ object TunnelController {
     }
 
     /** tun — как на телефоне; mixed — запасной путь без прав администратора. */
+    /**
+     * Куда ядро пишет свой журнал. В системном режиме на macOS ядро работает от
+     * root, поэтому писать в пользовательский каталог ему нельзя — иначе файл
+     * создаётся root'ом и приложение не может его подрезать.
+     */
+    private fun coreLogPath(privileged: Boolean): String =
+        if (privileged && Platform.isMac) "/Library/Application Support/WingerVPN/singbox.log"
+        else Platform.file("singbox.log").absolutePath
+
     private fun inbound(useTun: Boolean): JSONObject = if (useTun) {
         JSONObject()
             .put("type", "tun")
@@ -382,7 +408,9 @@ object TunnelController {
             .put("auto_route", true)
             .put("strict_route", true)
             .put("stack", "gvisor")
-            .put("sniff", true)
+        // `sniff` здесь больше не пишем: с sing-box 1.13 это legacy-поле инбаунда,
+        // ядро падает с FATAL. Определение протокола делает правило маршрута
+        // {"action":"sniff"} — оно уже есть в route.rules.
     } else {
         JSONObject()
             .put("type", "mixed")

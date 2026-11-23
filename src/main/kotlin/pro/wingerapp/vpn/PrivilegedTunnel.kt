@@ -76,13 +76,24 @@ object PrivilegedTunnel {
     }
 
     fun stop() {
-        controlFile.writeText("off")
+        runCatching { controlFile.writeText("off") }
+            .onFailure { VpnLog.add("файл состояния недоступен: ${it.message}") }
         if (Platform.isWindows) runCatching {
             ProcessBuilder("schtasks", "/end", "/tn", WIN_TASK)
                 .redirectErrorStream(true).start().waitFor()
         }
         VpnLog.add("системный туннель: стоп")
     }
+
+    /**
+     * Может ли приложение управлять туннелем: файл состояния должен быть
+     * доступен на запись. После установки старыми версиями он принадлежал root.
+     */
+    fun canControl(): Boolean = runCatching {
+        val current = if (controlFile.exists()) controlFile.readText() else "off"
+        controlFile.writeText(current.ifBlank { "off" })
+        true
+    }.getOrDefault(false)
 
     // --- внутреннее ---------------------------------------------------------------
 

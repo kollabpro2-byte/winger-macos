@@ -71,5 +71,18 @@ class DomainResolverTest {
             .map { servers.getJSONObject(it) }
             .first { it.optString("tag") == tag }
         assertTrue(resolver.optString("detour") != "proxy", "резолвер не должен иметь detour=proxy")
+
+        // Rule-set качается через http_client: `download_detour` устарел в 1.14
+        // и удалён в 1.16, а без прокси raw.githubusercontent.com часто недоступен.
+        val ruleSets = route.optJSONArray("rule_set")
+        assertTrue(ruleSets != null && ruleSets.length() > 0, "ожидался хотя бы один rule_set")
+        for (i in 0 until ruleSets!!.length()) {
+            val set = ruleSets.getJSONObject(i)
+            assertTrue(!set.has("download_detour"), "download_detour больше не используется")
+            assertTrue(
+                set.optJSONObject("http_client")?.optString("detour") == "proxy",
+                "rule-set должен качаться через http_client.detour=proxy",
+            )
+        }
     }
 }

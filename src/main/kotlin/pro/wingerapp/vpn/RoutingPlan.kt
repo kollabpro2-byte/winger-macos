@@ -142,7 +142,10 @@ internal object RoutingPlan {
                     .put("tag", tag)
                     .put("format", "binary")
                     .put("url", "https://raw.githubusercontent.com/SagerNet/$repo/rule-set/$tag.srs")
-                    .put("download_detour", "direct"),
+                    // Скачивание — через прокси: raw.githubusercontent.com без
+                    // туннеля часто недоступен, а ядро с 1.14 ругается на
+                    // устаревший `download_detour` (удалён в 1.16).
+                    .put("http_client", JSONObject().put("detour", "proxy")),
             )
         }
         return tag

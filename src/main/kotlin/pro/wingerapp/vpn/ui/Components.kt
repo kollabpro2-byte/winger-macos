@@ -143,20 +143,6 @@ internal fun rememberEagle(): ImageBitmap = remember(Unit) {
 /** Кэш растра орла: заполняется при первом обращении из композиции (главный поток). */
 private var eagleCache: ImageBitmap? = null
 
-/**
- * Неоновая версия орла для кнопки подключения: тёмное тело с яркими «трубками»
- * по контуру, слева циан, справа пурпур.
- *
- * Растр готовит `tools/make_neon.py` из того же [R.drawable.eagle], поэтому
- * силуэт совпадает с брендом, а в UI не нужно рисовать свечение шейдерами.
- */
-@Composable
-internal fun rememberEagleNeon(): ImageBitmap = remember(Unit) {
-    neonCache ?: loadBitmap("drawable/eagle_neon.png").also { neonCache = it }
-}
-
-private var neonCache: ImageBitmap? = null
-
 @Composable
 internal fun BirdMark() {
     val eagle = rememberEagle()

@@ -3,12 +3,9 @@ package pro.wingerapp.vpn.ui
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.keyframes
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -266,29 +263,6 @@ private fun Orb(on: Boolean, hint: String, onToggle: () -> Unit) {
     } else {
         lerp(Color(0x5CFFFFFF), Color(0xFFA9DCE6), lit)
     }
-    // Ореол «дышит» в такт с градиентом названия: 3.7 с, пик на половине цикла.
-    // Держим состояние, а читаем его ВНУТРИ graphicsLayer: тогда обновление идёт
-    // в фазе отрисовки и не вызывает перекомпоновку всего экрана каждый кадр.
-    // Пока VPN выключен, анимация не создаётся вовсе — свечения всё равно не видно.
-    val breathAlpha: State<Float>
-    val breathScale: State<Float>
-    if (on) {
-        val breath = rememberInfiniteTransition(label = "breath")
-        breathAlpha = breath.animateFloat(
-            0.44f, 1f,
-            infiniteRepeatable(tween(1850, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-            label = "breathAlpha",
-        )
-        breathScale = breath.animateFloat(
-            0.92f, 1.08f,
-            infiniteRepeatable(tween(1850, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-            label = "breathScale",
-        )
-    } else {
-        breathAlpha = remember { mutableFloatStateOf(1f) }
-        breathScale = remember { mutableFloatStateOf(1f) }
-    }
-    val glow = animateFloatAsState(if (on) 1f else 0f, tween(2400), label = "glow")
 
     Box(Modifier.fillMaxWidth().height(190.dp).padding(top = 6.dp), contentAlignment = Alignment.Center) {
         Box(
@@ -317,43 +291,16 @@ private fun Orb(on: Boolean, hint: String, onToggle: () -> Unit) {
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                // Свечение из центра: мягкое пятно, «дышит» при включении.
-                // Раньше здесь было ещё Modifier.blur(12.dp): настоящая размывка
-                // 164-dp слоя на каждом кадре. На телефоне это загружало GPU так,
-                // что интерфейс переставал отзываться на нажатия. Вернулись к
-                // градиенту с большим числом стопов — он мягкий и почти бесплатный.
-                Box(
-                    Modifier.matchParentSize().padding(4.dp)
-                        .graphicsLayer {
-                            alpha = glow.value * breathAlpha.value
-                            scaleX = breathScale.value
-                            scaleY = breathScale.value
-                        }
-                        .background(
-                            // Пять стопов вместо трёх: мягкий спад без настоящего blur,
-                            // поэтому ступенек на OLED почти не видно, а стоит дёшево.
-                            // К центру циан, к краю фиолетовый — как в макете.
-                            Brush.radialGradient(
-                                *arrayOf(
-                                    0f to Color(0x7A22D3EE),
-                                    0.30f to Color(0x5C22D3EE),
-                                    0.48f to Color(0x38A855F7),
-                                    0.66f to Color(0x18A855F7),
-                                    0.84f to Color(0x00A855F7),
-                                )
-                            )
-                        )
-                )
-                // Неоновый орёл: тёмное тело, светлые «трубки» по контуру, слева
-                // циан, справа пурпур — как в макете. Растр: tools/make_neon.py.
-                // 110×89 dp при диске 168 dp: видимые крылья занимают ~54 % диаметра.
+                // Орёл: при включении опускается сверху вниз к центру.
+                // Размер — как в утверждённом макете: там орёл занимает 30 % диаметра
+                // круга (42 px при круге 140). У нас круг 176 dp, поэтому 53 dp даёт
+                // ту же пропорцию, а не «мельче, чем в макете».
                 Image(
-                    bitmap = rememberEagleNeon(), contentDescription = null,
-                    modifier = Modifier.size(width = 110.dp, height = 89.dp)
-                        .graphicsLayer {
-                            alpha = lit
-                            translationY = eagleDrop * density
-                        },
+                    bitmap = rememberEagle(), contentDescription = null,
+                    modifier = Modifier.size(53.dp).graphicsLayer {
+                        alpha = lit
+                        translationY = eagleDrop * density
+                    },
                     contentScale = ContentScale.Fit,
                     filterQuality = FilterQuality.High,
                 )

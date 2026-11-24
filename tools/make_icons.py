@@ -205,20 +205,115 @@ def icon(size: int) -> Image.Image:
 
 
 
-for base in (16, 32, 128, 256, 512):
-    icon(base).save(os.path.join(ICONSET, f"icon_{base}x{base}.png"))
-    icon(base * 2).save(os.path.join(ICONSET, f"icon_{base}x{base}@2x.png"))
+# Точка входа — в конце файла: там выбирается источник значка (референс или
+# прежняя отрисовка буквы W шрифтом).
 
-subprocess.run(["iconutil", "-c", "icns", ICONSET, "-o", ICNS], check=True)
 
-# Windows: многоразмерный .ico.
-icon(256).save(
-    ICO,
-    format="ICO",
-    sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
-)
+# --- Иконка из готового растра -------------------------------------------------
+# Референс — плитка с сине-фиолетовым градиентом и белым знаком: он нарисован
+# вне репозитория, поэтому здесь ничего не перерисовывается, а растр приводится
+# к формату системы: углы скругляются маской, внешний белый фон становится
+# прозрачным. Иначе в Dock вокруг иконки висел бы белый квадрат (фон JPEG).
 
-# Превью для проверки вёрстки значка.
-icon(512).save("/tmp/winger-icon-preview.png")
-print("готово:", ICNS, ICO)
+REFERENCE = "tools/icon-source.jpg"
+# Радиус скругления плитки относительно её стороны — примерно как у macOS.
+PLATE_CORNER = 0.225
+# Маску рисуем крупно и уменьшаем: края остаются гладкими на всех размерах.
+PLATE_SUPERSAMPLE = 4
+# Порог «не белый»: фон JPEG почти белый, но не ровно 255.
+PLATE_WHITE_EPS = 12
 
+
+def _plate_box(img: Image.Image) -> tuple[int, int, int]:
+    """Квадрат плитки внутри канвы: левый верхний угол и сторона.
+
+    Границы плитки — всё, что заметно отличается от белого. Квадрат берём по
+    большей стороне и центрируем: тонкая светлая обводка не срезается, а поля
+    остаются такими же, как в источнике.
+    """
+    px = img.load()
+    width, height = img.size
+    lo_x, lo_y, hi_x, hi_y = width, height, 0, 0
+    for y in range(height):
+        for x in range(width):
+            r, g, b = px[x, y]
+            if (255 - r) ** 2 + (255 - g) ** 2 + (255 - b) ** 2 > PLATE_WHITE_EPS ** 2:
+                lo_x = min(lo_x, x)
+                lo_y = min(lo_y, y)
+                hi_x = max(hi_x, x)
+                hi_y = max(hi_y, y)
+    if hi_x <= lo_x or hi_y <= lo_y:
+        raise SystemExit("не нашёл плитку на исходнике — проверь " + REFERENCE)
+    side = max(hi_x - lo_x + 1, hi_y - lo_y + 1)
+    cx = (lo_x + hi_x) / 2
+    cy = (lo_y + hi_y) / 2
+    return round(cx - side / 2), round(cy - side / 2), side
+
+
+def _plate_mask(side: int) -> Image.Image:
+    """Маска плитки: сплошная внутри, прозрачная за скруглением."""
+    big = side * PLATE_SUPERSAMPLE
+    mask = Image.new("L", (big, big), 0)
+    radius = int(round(side * PLATE_CORNER)) * PLATE_SUPERSAMPLE
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, big - 1, big - 1), radius=radius, fill=255
+    )
+    return mask.resize((side, side), Image.LANCZOS)
+
+
+def build_from_reference():
+    """Собирает iconset, .icns и .ico из REFERENCE с прозрачным фоном."""
+    source = Image.open(REFERENCE).convert("RGB")
+    left, top, side = _plate_box(source)
+    canvas = source.convert("RGBA")
+    alpha = Image.new("L", source.size, 0)
+    alpha.paste(_plate_mask(side), (left, top))
+    canvas.putalpha(alpha)
+    # Дальше уменьшаем от большого растра: мелкие размеры остаются чистыми.
+    base = canvas.resize((1024, 1024), Image.LANCZOS)
+
+    os.makedirs(ICONSET, exist_ok=True)
+    # Имена строго по требованию iconutil: лишние файлы в iconset не нужны.
+    for name, size in (
+        ("icon_16x16.png", 16),
+        ("icon_16x16@2x.png", 32),
+        ("icon_32x32.png", 32),
+        ("icon_32x32@2x.png", 64),
+        ("icon_128x128.png", 128),
+        ("icon_128x128@2x.png", 256),
+        ("icon_256x256.png", 256),
+        ("icon_256x256@2x.png", 512),
+        ("icon_512x512.png", 512),
+        ("icon_512x512@2x.png", 1024),
+    ):
+        base.resize((size, size), Image.LANCZOS).save(os.path.join(ICONSET, name))
+
+    subprocess.run(["iconutil", "-c", "icns", ICONSET, "-o", ICNS], check=True)
+    base.resize((256, 256), Image.LANCZOS).save(
+        ICO,
+        format="ICO",
+        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+    )
+    base.resize((512, 512), Image.LANCZOS).save("/tmp/winger-icon-preview.png")
+    print("готово из референса:", ICNS, ICO)
+
+
+
+if os.path.exists(REFERENCE):
+    # Основной путь: готовая плитка из tools/icon-source.jpg.
+    build_from_reference()
+else:
+    # Запасной путь: прежняя отрисовка буквы W шрифтом Montserrat Black.
+    for base in (16, 32, 128, 256, 512):
+        icon(base).save(os.path.join(ICONSET, f"icon_{base}x{base}.png"))
+        icon(base * 2).save(os.path.join(ICONSET, f"icon_{base}x{base}@2x.png"))
+
+    subprocess.run(["iconutil", "-c", "icns", ICONSET, "-o", ICNS], check=True)
+
+    icon(256).save(
+        ICO,
+        format="ICO",
+        sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+    )
+    icon(512).save("/tmp/winger-icon-preview.png")
+    print("готово:", ICNS, ICO)

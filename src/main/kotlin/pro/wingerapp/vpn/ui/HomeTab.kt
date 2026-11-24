@@ -722,7 +722,15 @@ private fun ListHeaderRow(
                 .clickable(enabled = !pinging) { onPing() },
             contentAlignment = Alignment.Center
         ) {
-            BoltIcon(Color(0xFFE9D5FF), 11.dp)
+            // Пока идёт проверка (до ~7 секунд), показываем индикатор: иначе
+            // кнопка просто «не реагирует» — она в это время отключена.
+            if (pinging) {
+                CircularProgressIndicator(
+                    Modifier.size(13.dp), strokeWidth = 2.dp, color = Color(0xFFE9D5FF),
+                )
+            } else {
+                BoltIcon(Color(0xFFE9D5FF), 11.dp)
+            }
         }
     }
 }

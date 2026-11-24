@@ -384,37 +384,47 @@ class AppViewModel {
      */
     fun checkPings() {
         val snapshot = _state.value
-        if (snapshot.servers.isEmpty()) return
+        if (snapshot.servers.isEmpty()) {
+            // Кнопка должна реагировать даже когда список ещё не пришёл.
+            VpnLog.add("проверка пинга: список серверов пуст")
+            _state.update {
+                it.copy(notice = "Загружаем подписку…", noticeSeq = it.noticeSeq + 1)
+            }
+            return
+        }
         scope.launch {
             _state.update { it.copy(pinging = true) }
-            if (TunnelState.running.value) {
-                runCatching { pingAll(SubConfig(snapshot.raw, snapshot.servers)) }
-            } else {
-                val measured = runCatching {
-                    ProbeTunnel.check(snapshot.raw, snapshot.servers)
-                }.getOrElse { emptyMap() }
-                if (measured.isNotEmpty()) {
-                    val at = System.currentTimeMillis()
-                    synchronized(availabilityLock) {
-                        measured.forEach { (name, ms) -> availability[name] = at to (ms != null) }
+            VpnLog.add("проверка пинга: старт")
+            try {
+                if (TunnelState.running.value) {
+                    runCatching { pingAll(SubConfig(snapshot.raw, snapshot.servers)) }
+                } else {
+                    val measured = runCatching {
+                        ProbeTunnel.check(snapshot.raw, snapshot.servers)
+                    }.getOrElse { emptyMap() }
+                    if (measured.isNotEmpty()) {
+                        val at = System.currentTimeMillis()
+                        synchronized(availabilityLock) {
+                            measured.forEach { (name, ms) -> availability[name] = at to (ms != null) }
+                        }
+                        // Доступность взяли из служебного туннеля, а число показываем
+                        // из быстрого TCP-замера мимо туннеля: 400–800 мс против 50–120.
+                        val byName = snapshot.servers.associateBy { it.name }
+                        val shown = measured.mapValues { (name, ms) ->
+                            if (ms == null) null
+                            else byName[name]?.let { node -> InterfacePing.ping(node.host, node.port) } ?: ms
+                        }
+                        _state.update { state -> state.copy(pings = shown) }
+                        VpnLog.add(
+                            "пинг (проверка): ${measured.values.count { it != null }} из " +
+                                "${snapshot.servers.size} серверов работают",
+                        )
                     }
-                    // Доступность взяли из служебного туннеля, а число показываем
-                    // из быстрого TCP-замера мимо туннеля: 400–800 мс против 50–120.
-                    val byName = snapshot.servers.associateBy { it.name }
-                    val shown = measured.mapValues { (name, ms) ->
-                        if (ms == null) null
-                        else byName[name]?.let { node -> InterfacePing.ping(node.host, node.port) } ?: ms
-                    }
-                    _state.update { state ->
-                        state.copy(pings = shown)
-                    }
-                    VpnLog.add(
-                        "пинг (проверка): ${measured.values.count { it != null }} из " +
-                            "${snapshot.servers.size} серверов работают",
-                    )
                 }
+            } finally {
+                _state.update { it.copy(pinging = false) }
+                VpnLog.add("проверка пинга: готово")
             }
-            _state.update { it.copy(pinging = false) }
         }
     }
 

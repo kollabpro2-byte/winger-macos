@@ -370,6 +370,9 @@ object TunnelController {
     }
 
     /** Отвечает ли Clash API ядра (признак, что ядро живое). */
+    /** Отвечает ли Clash API ядра: до его готовности замеры бессмысленны. */
+    fun coreApiAlive(): Boolean = clashAlive()
+
     private fun clashAlive(): Boolean = runCatching {
         (URL("http://127.0.0.1:9090/connections").openConnection() as HttpURLConnection).run {
             connectTimeout = 1_500

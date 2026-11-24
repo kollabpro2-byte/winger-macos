@@ -5,7 +5,7 @@
 иконка в Dock и на рабочем столе совпадает с брендом в приложении.
 
 Фон непрозрачный: скруглённый квадрат с «огранкой» — левая половина рамки
-синяя, правая фиолетовая (как крылья орла), внутри бело-фиолетовая подложка.
+синяя, правая фиолетовая (как крылья орла), внутри чистая белая подложка.
 """
 import os
 import subprocess
@@ -32,7 +32,7 @@ BLUE_BOTTOM = (26, 92, 168)
 PURPLE_TOP = (168, 92, 235)
 PURPLE_BOTTOM = (98, 38, 158)
 PAPER_TOP = (255, 255, 255)
-PAPER_BOTTOM = (240, 231, 255)
+PAPER_BOTTOM = (255, 255, 255)
 # Орёл не должен касаться огранки: доля стороны квадрата.
 EAGLE = 0.70
 
@@ -97,7 +97,7 @@ def icon(size: int) -> Image.Image:
     ).convert("RGBA")
     square.putalpha(rounded_mask(side, radius))
 
-    # 2. Внутренняя бело-фиолетовая подложка со скруглением.
+    # 2. Внутренняя белая подложка со скруглением: цвет только в огранке.
     paper = vertical_gradient(side, PAPER_TOP, PAPER_BOTTOM).convert("RGBA")
     paper.putalpha(rounded_mask(side, max(2, radius - ring // 2), inset=ring))
     square.alpha_composite(paper)
@@ -114,14 +114,14 @@ def icon(size: int) -> Image.Image:
         )
         square.alpha_composite(bevel)
 
-    # 4. Тень подложки: у краёв чуть темнее, рамка отделяется от белого.
+    # 4. Тень подложки: тонкая линия у края, чтобы белое не сливалось с рамкой.
     shade = Image.new("RGBA", (side, side), (0, 0, 0, 0))
     sdraw = ImageDraw.Draw(shade)
     sdraw.rounded_rectangle(
         [ring, ring, side - 1 - ring, side - 1 - ring],
         radius=max(2, radius - ring // 2),
-        outline=(48, 24, 92, 30),
-        width=max(1, round(ring * 0.5)),
+        outline=(90, 80, 120, 18),
+        width=max(1, round(ring * 0.35)),
     )
     square.alpha_composite(shade)
 

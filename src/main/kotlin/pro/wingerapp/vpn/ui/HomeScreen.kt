@@ -99,6 +99,9 @@ fun HomeScreen(
 
     // Ключ включает число серверов: подписка приходит асинхронно, и первый
     // запуск эффекта мог случиться до её загрузки (тогда пинги не считались).
+    // Смена списка серверов — единственный повод забыть, кто был мёртв.
+    LaunchedEffect(st.servers.size) { vm.clearAvailability() }
+
     LaunchedEffect(on, st.servers.size) {
         vm.clearPingCache()
         // При выключении демон гасит ядро не мгновенно: если замерить сразу,
@@ -162,7 +165,7 @@ fun HomeScreen(
                 noticeSeq = st.noticeSeq,
                 trafficIntervalSec = trafficSec,
                 raw = st.raw, connect = connect, disconnect = disconnect,
-                reload = { ping -> vm.refresh(ping) },
+                reload = { ping -> if (ping) vm.checkPings() else vm.refresh(false) },
                 onSelect = { name ->
                     vm.select(name)
                     vm.config(name)?.let { connect(it, vm.rawSubscription()) }

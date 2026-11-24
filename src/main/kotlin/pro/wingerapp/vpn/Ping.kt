@@ -53,10 +53,12 @@ fun coreDelay(
     proxyTag: String = "proxy",
     timeoutMs: Int = 3000,
     url: String = "http://www.gstatic.com/generate_204",
+    /** Порт Clash API: основной туннель или служебный при проверке. */
+    port: Int = 9090,
 ): Int? = runCatching {
     val encoded = java.net.URLEncoder.encode(url, "UTF-8")
     val connection = (
-        java.net.URL("http://127.0.0.1:9090/proxies/$proxyTag/delay?timeout=$timeoutMs&url=$encoded")
+        java.net.URL("http://127.0.0.1:$port/proxies/$proxyTag/delay?timeout=$timeoutMs&url=$encoded")
             .openConnection() as java.net.HttpURLConnection
         )
     connection.connectTimeout = 1_500

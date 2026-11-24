@@ -47,6 +47,11 @@ fun main() {
         ConfigDump.run(System.getenv("WINGER_DUMP_CONFIG")!!)
         return
     }
+    // Проверка служебного туннеля: WINGER_SMOKE_PROBE=1 ./gradlew run
+    if (ProbeSmoke.enabled()) {
+        ProbeSmoke.run()
+        return
+    }
     // Проверка «интернет через туннель»: WINGER_SMOKE_ONLINE=1 ./gradlew run
     if (TunnelOnlineSmoke.enabled()) {
         TunnelOnlineSmoke.run()

@@ -228,6 +228,10 @@ class AppViewModel {
 
     fun clearPingCache() {
         synchronized(pingCacheLock) { pingCache.clear() }
+    }
+
+    /** Сбрасывает отметки доступности: нужен, когда сменился список серверов. */
+    fun clearAvailability() {
         synchronized(availabilityLock) { availability.clear() }
     }
 
@@ -372,6 +376,48 @@ class AppViewModel {
      * Нужен, когда подписка не обновилась (нет сети, панель недоступна), но
      * серверы уже есть в кэше: иначе список пингов оставался старым.
      */
+    /**
+     * Проверка пинга по кнопке. Если VPN включён — меряем через его ядро,
+     * если выключен — поднимаем служебный туннель без tun и меряем реальный
+     * выход через каждый сервер. После этого «n/a» остаётся у мёртвых, а не
+     * превращается в цифры при отключении VPN.
+     */
+    fun checkPings() {
+        val snapshot = _state.value
+        if (snapshot.servers.isEmpty()) return
+        scope.launch {
+            _state.update { it.copy(pinging = true) }
+            if (TunnelState.running.value) {
+                runCatching { pingAll(SubConfig(snapshot.raw, snapshot.servers)) }
+            } else {
+                val measured = runCatching {
+                    ProbeTunnel.check(snapshot.raw, snapshot.servers)
+                }.getOrElse { emptyMap() }
+                if (measured.isNotEmpty()) {
+                    val at = System.currentTimeMillis()
+                    synchronized(availabilityLock) {
+                        measured.forEach { (name, ms) -> availability[name] = at to (ms != null) }
+                    }
+                    // Доступность взяли из служебного туннеля, а число показываем
+                    // из быстрого TCP-замера мимо туннеля: 400–800 мс против 50–120.
+                    val byName = snapshot.servers.associateBy { it.name }
+                    val shown = measured.mapValues { (name, ms) ->
+                        if (ms == null) null
+                        else byName[name]?.let { node -> InterfacePing.ping(node.host, node.port) } ?: ms
+                    }
+                    _state.update { state ->
+                        state.copy(pings = shown)
+                    }
+                    VpnLog.add(
+                        "пинг (проверка): ${measured.values.count { it != null }} из " +
+                            "${snapshot.servers.size} серверов работают",
+                    )
+                }
+            }
+            _state.update { it.copy(pinging = false) }
+        }
+    }
+
     fun refreshPings() {
         val snapshot = _state.value
         if (snapshot.servers.isEmpty()) return

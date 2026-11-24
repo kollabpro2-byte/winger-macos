@@ -298,7 +298,7 @@ class AppViewModel {
         if (deviceId.isBlank()) return
         scope.launch {
             _state.update {
-                it.copy(pinging = ping, refreshing = !ping, pings = if (ping) emptyMap() else it.pings)
+                it.copy(refreshing = !ping, pings = if (ping) emptyMap() else it.pings)
             }
             val loaded = withContext(Dispatchers.IO) {
                 runCatching {
@@ -352,12 +352,11 @@ class AppViewModel {
                 }
             }
             if (ping) {
-                result.nodes?.let {
-                    // Замер пингов — это N параллельных TCP-подключений. На старте
-                    // они конкурировали с первым кадром и скроллом, поэтому даём
-                    // интерфейсу устояться и только потом меряем.
+                if (result.nodes != null) {
+                    // Проверка доступности настоящая: при включённом VPN — через
+                    // его ядро, при выключенном — через служебный туннель.
                     delay(PING_SETTLE_MS)
-                    pingAll(it)
+                    checkPings()
                 }
             } else {
                 // Текст держим в состоянии, пока идёт вся анимация (3.0 с):
@@ -366,7 +365,7 @@ class AppViewModel {
                 delay(3000)
                 _state.update { if (it.notice == fresh) it.copy(notice = null) else it }
             }
-            _state.update { it.copy(pinging = false, refreshing = false) }
+            _state.update { it.copy(refreshing = false) }
         }
     }
 
@@ -383,6 +382,8 @@ class AppViewModel {
      * превращается в цифры при отключении VPN.
      */
     fun checkPings() {
+        // Уже идёт проверка (например, стартовая) — второй раз не запускаем.
+        if (_state.value.pinging) return
         val snapshot = _state.value
         if (snapshot.servers.isEmpty()) {
             // Кнопка должна реагировать даже когда список ещё не пришёл.
@@ -428,15 +429,7 @@ class AppViewModel {
         }
     }
 
-    fun refreshPings() {
-        val snapshot = _state.value
-        if (snapshot.servers.isEmpty()) return
-        scope.launch {
-            _state.update { it.copy(pinging = true) }
-            runCatching { pingAll(SubConfig(snapshot.raw, snapshot.servers)) }
-            _state.update { it.copy(pinging = false) }
-        }
-    }
+    fun refreshPings() = checkPings()
 
     private suspend fun pingAll(parsed: SubConfig) {
         // Туннель включён: прямой TCP-пинг врёт (~1 мс, рукопожатие завершает

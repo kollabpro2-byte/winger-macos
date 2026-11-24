@@ -62,26 +62,6 @@ fun HomeScreen(
     val lastTunnelAt = remember { java.util.concurrent.atomic.AtomicLong(0L) }
     LaunchedEffect(on) { lastTunnelAt.set(System.currentTimeMillis()) }
 
-    // A new network means a new route: re-probe latency so the list does not keep
-    // the numbers measured on the previous Wi-Fi.
-    // Десктоп: системного NetworkCallback нет, поэтому раз в 15 секунд
-    // проверяем, вернулась ли сеть после обрыва. Пинги пересчитываем только на
-    // переходе «офлайн → онлайн», чтобы не дёргать серверы зря.
-    LaunchedEffect(Unit) {
-        var wasOnline = Platform.isOnline()
-        while (true) {
-            delay(15_000)
-            val online = Platform.isOnline()
-            if (online && !wasOnline && AppVisibility.visible &&
-                System.currentTimeMillis() - lastTunnelAt.get() >= 6000L
-            ) {
-                clearPingCaches()
-                vm.refresh(ping = true)
-            }
-            wasOnline = online
-        }
-    }
-
     // Пинги считаем по уже загруженному списку, без обращения к панели:
     // при включённом туннеле — только выбранный сервер (через ядро), при
     // выключенном — все. Раз в 5 минут обновляем, чтобы числа не застывали.
@@ -93,27 +73,15 @@ fun HomeScreen(
             // Даём ядру перезапуститься и сразу пересчитываем пинги уже по тегам.
             kotlinx.coroutines.delay(2_500)
             vm.clearPingCache()
-            vm.refreshPings()
+            vm.checkPings()
         }
     }
 
-    // Ключ включает число серверов: подписка приходит асинхронно, и первый
-    // запуск эффекта мог случиться до её загрузки (тогда пинги не считались).
-    // Смена списка серверов — единственный повод забыть, кто был мёртв.
-    LaunchedEffect(st.servers.size) { vm.clearAvailability() }
-
-    LaunchedEffect(on, st.servers.size) {
-        vm.clearPingCache()
-        // При выключении демон гасит ядро не мгновенно: если замерить сразу,
-        // рукопожатие опять завершит локальный стек и пинги станут 1 мс.
-        if (!on) delay(800)
-        vm.refreshPings()
-    }
-    LaunchedEffect(on) {
-        while (true) {
-            delay(5 * 60 * 1000L)
-            if (AppVisibility.visible) vm.refreshPings()
-        }
+    // Проверка пинга — только при открытии приложения и по кнопке.
+    // Пока она идёт, числа не показываем: иначе пользователь видит «пинг есть»
+    // у всех, а через пару секунд у мёртвых появляется n/a.
+    LaunchedEffect(st.servers.size) {
+        if (st.servers.isNotEmpty() && st.pings.isEmpty()) vm.checkPings()
     }
 
     LaunchedEffect(Unit) {

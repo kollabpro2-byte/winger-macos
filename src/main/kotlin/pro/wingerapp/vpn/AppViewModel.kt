@@ -29,6 +29,13 @@ private const val PING_SETTLE_MS = 350L
 private const val PING_TTL_MS = 5 * 60 * 1000L
 
 /**
+ * Сколько живёт результат проверки «работает ли выход через сервер».
+ * Проверка ходит в интернет через сам сервер, поэтому делаем её редко и
+ * кэшируем: иначе список n/a «мигает» на каждом обновлении.
+ */
+private const val AVAILABILITY_TTL_MS = 10 * 60 * 1000L
+
+/**
  * Какой сервер выбрать сразу после входа: «Автопилот», если он есть в подписке,
  * иначе первый в списке. Вынесено отдельной функцией, чтобы поведение можно
  * было закрепить тестом без Android-окружения.
@@ -105,6 +112,10 @@ class AppViewModel {
 
     /** Ограничитель параллельных замеров: не больше 5 TCP-подключений сразу. */
     private val pingGate = Semaphore(5)
+
+    /** Доступность: имя ноды → (время проверки, работает ли выход). */
+    private val availability = HashMap<String, Pair<Long, Boolean>>()
+    private val availabilityLock = Any()
 
     /** Кэш замеров: имя ноды → (время, мс). Живёт [PING_TTL_MS]. */
     private val pingCache = HashMap<String, Pair<Long, Int?>>()
@@ -211,6 +222,7 @@ class AppViewModel {
 
     fun clearPingCache() {
         synchronized(pingCacheLock) { pingCache.clear() }
+        synchronized(availabilityLock) { availability.clear() }
     }
 
     /** Экран забрал запрос «включись сам» — второй раз он не сработает. */
@@ -370,37 +382,25 @@ class AppViewModel {
         // для КАЖДОГО сервера: в конфиге на них заведены отдельные outbound'ы,
         // а Clash API меряет реальный запрос через нужный сервер.
         if (TunnelState.running.value) {
-            // Ядро после старта догружает rule-set'ы, и первые замеры могут не
-            // пройти вовсе. Тогда ждём и повторяем: иначе «нет» висело бы до
-            // следующего обновления через 5 минут.
-            val gate = Semaphore(4)
-            var result: Map<String, Int?> = emptyMap()
-            for (attempt in 1..3) {
-                result = coroutineScope {
-                    parsed.servers.map { node ->
-                        async(Dispatchers.IO) {
-                            val tag = TunnelController.pingTag(node.name)
-                                ?: return@async node.name to null
-                            node.name to gate.withPermit {
-                                // Доступность проверяем реальным запросом через этот
-                                // сервер: порт может быть открыт, а прокси не работать.
-                                val usable = runCatching {
-                                    coreDelay(proxyTag = tag, timeoutMs = 3000)
-                                }.getOrNull() != null
-                                if (!usable) return@withPermit null
-                                // Число берём из TCP-рукопожатия мимо туннеля:
-                                // оно близко к тому, что показывает Incy. Если
-                                // привязка к интерфейсу недоступна — оставляем
-                                // значение, измеренное через ядро.
-                                InterfacePing.ping(node.host, node.port)
-                                    ?: runCatching { coreDelay(proxyTag = tag, timeoutMs = 3000) }.getOrNull()
-                            }
+            // Туннель включён. Число — TCP-рукопожатие мимо туннеля (быстро и
+            // близко к Incy), доступность — реальный запрос через сервер, но с
+            // кэшем: иначе «n/a» мигает на каждом обновлении.
+            val now = System.currentTimeMillis()
+            val gate = Semaphore(6)
+            val result = coroutineScope {
+                parsed.servers.map { node ->
+                    async(Dispatchers.IO) {
+                        val tag = TunnelController.pingTag(node.name)
+                            ?: return@async node.name to null
+                        node.name to gate.withPermit {
+                            val usable = availabilityOf(node.name, tag, now)
+                            if (!usable) return@withPermit null
+                            InterfacePing.ping(node.host, node.port)
+                                ?: runCatching { coreDelay(proxyTag = tag, timeoutMs = 2_000) }.getOrNull()
                         }
-                    }.awaitAll()
-                }.toMap()
-                if (result.values.any { it != null }) break
-                if (attempt < 3) delay(2_000)
-            }
+                    }
+                }.awaitAll()
+            }.toMap()
             _state.update { it.copy(pings = result) }
             val known = result.values.count { it != null }
             VpnLog.add("пинг через ядро: $known из ${parsed.servers.size} серверов ответили")
@@ -450,6 +450,28 @@ class AppViewModel {
             }.awaitAll()
         }.toMap()
         _state.update { it.copy(pings = it.pings + fresh) }
+    }
+
+    /**
+     * Работает ли выход через сервер. Кэш на 10 минут + один повтор: единичный
+     * таймаут не должен превращать живой сервер в «n/a».
+     */
+    private suspend fun availabilityOf(name: String, tag: String, now: Long): Boolean {
+        synchronized(availabilityLock) { availability[name] }
+            ?.takeIf { now - it.first < AVAILABILITY_TTL_MS }
+            ?.let { return it.second }
+
+        val first = runCatching { coreDelay(proxyTag = tag, timeoutMs = 2_000) }.getOrNull() != null
+        val ok = first || runBlockingRetry(tag)
+        synchronized(availabilityLock) {
+            availability[name] = System.currentTimeMillis() to ok
+        }
+        return ok
+    }
+
+    private suspend fun runBlockingRetry(tag: String): Boolean {
+        delay(300)
+        return runCatching { coreDelay(proxyTag = tag, timeoutMs = 2_000) }.getOrNull() != null
     }
 
     private fun str(id: Int): String = pro.wingerapp.vpn.ui.stringsNow()[id]

@@ -39,7 +39,10 @@ object PingSmoke {
             val core = TunnelController.pingTag(node.name)?.let { tag ->
                 runCatching { coreDelay(proxyTag = tag, timeoutMs = 4000) }.getOrNull()
             }
-            println("SMOKE-PING: ${node.name} → tcp=${tcp ?: "n/a"} мс, через ядро=${core ?: "n/a"} мс")
+            // Что увидит пользователь: число показываем только если выход
+            // реально работает, иначе «n/a».
+            val shown = if (core == null) "n/a" else "${tcp ?: core} мс"
+            println("SMOKE-PING: ${node.name} → tcp=${tcp ?: "n/a"} мс, через ядро=${core ?: "n/a"} мс, в списке: $shown")
             InterfacePing.lastError?.let { println("SMOKE-PING: ошибка TCP: $it") }
         }
 

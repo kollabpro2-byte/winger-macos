@@ -256,10 +256,16 @@ private fun Orb(on: Boolean, hint: String, onToggle: () -> Unit) {
         if (on) tween(450) else tween(1200, delayMillis = 1600),
         label = "hint",
     )
-    // Ободок толстый в обоих состояниях: в покое он виден как плотная «каря»
-    // (3 dp, 35% белого), при включении разгорается циановым и чуть толстеет.
-    val border = lerp(Color(0x59FFFFFF), Cyan.copy(alpha = .9f), lit)
-    val borderWidth = 3f + 1.5f * lit
+    // Кольцо как в макете: светлая «трубка» с зазором от тёмного диска.
+    // Выключено — приглушённое, включено — палево-циановое, почти белое.
+    // На светлой теме цвета чуть глубже: палево-циановое кольцо на белом фоне
+    // почти растворяется.
+    val light = AppTheme.p.isLight
+    val ring = if (light) {
+        lerp(Color(0x66324A5A), Color(0xFF7FCBDD), lit)
+    } else {
+        lerp(Color(0x5CFFFFFF), Color(0xFFA9DCE6), lit)
+    }
     // Ореол «дышит» в такт с градиентом названия: 3.7 с, пик на половине цикла.
     // Держим состояние, а читаем его ВНУТРИ graphicsLayer: тогда обновление идёт
     // в фазе отрисовки и не вызывает перекомпоновку всего экрана каждый кадр.
@@ -287,71 +293,79 @@ private fun Orb(on: Boolean, hint: String, onToggle: () -> Unit) {
     Box(Modifier.fillMaxWidth().height(190.dp).padding(top = 6.dp), contentAlignment = Alignment.Center) {
         Box(
             Modifier.size(176.dp)
-                .graphicsLayer {
-                    shadowElevation = (6f + 12f * lit) * density
-                    shape = CircleShape
-                    clip = true
-                }
-                .background(
-                    Brush.radialGradient(
-                        if (AppTheme.p.isLight)
-                            listOf(Color(0xFFFFFFFF), Color(0xFFF1F4F9), Color(0xFFE1E7EF))
-                        else
-                            listOf(Color(0xFF0E1B2C), Color(0xFF0A1220), Color(0xFF070C14))
-                    )
-                )
-                .border(borderWidth.dp, border, CircleShape)
+                .border(4.dp, ring, CircleShape)
                 // Подпись ушла из визуала, но осталась для скринридера.
+                // Клик — по всей кнопке: палец часто попадает в зазор мимо диска.
                 .clickable(onClickLabel = hint) { onToggle() },
             contentAlignment = Alignment.Center
         ) {
-            // Свечение из центра: мягкое пятно, «дышит» при включении.
-            // Раньше здесь было ещё Modifier.blur(12.dp): настоящая размывка
-            // 164-dp слоя на каждом кадре. На телефоне это загружало GPU так,
-            // что интерфейс переставал отзываться на нажатия. Вернулись к
-            // градиенту с большим числом стопов — он мягкий и почти бесплатный.
+            // Тёмный диск отступает от кольца на 4 dp — отсюда «двойной» контур
+            // из макета: светлая трубка, тёмный зазор, чёрный круг.
             Box(
-                Modifier.matchParentSize().padding(6.dp)
+                Modifier.size(168.dp)
                     .graphicsLayer {
-                        alpha = glow.value * breathAlpha.value
-                        scaleX = breathScale.value
-                        scaleY = breathScale.value
+                        shadowElevation = (4f + 10f * lit) * density
+                        shape = CircleShape
+                        clip = true
                     }
                     .background(
-                        // Пять стопов вместо трёх: мягкий спад без настоящего blur,
-                        // поэтому ступенек на OLED почти не видно, а стоит дёшево.
+                        // Диск тёмный в любой теме: неоновая графика требует
+                        // тёмной подложки, иначе свечение не читается.
                         Brush.radialGradient(
-                            *arrayOf(
-                                0f to Color(0x8522D3EE),
-                                0.30f to Color(0x5C22D3EE),
-                                0.50f to Color(0x3D22D3EE),
-                                0.64f to Color(0x1422D3EE),
-                                0.78f to Color(0x0022D3EE),
+                            listOf(Color(0xFF0F2530), Color(0xFF0A141C), Color(0xFF05080D))
+                        )
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                // Свечение из центра: мягкое пятно, «дышит» при включении.
+                // Раньше здесь было ещё Modifier.blur(12.dp): настоящая размывка
+                // 164-dp слоя на каждом кадре. На телефоне это загружало GPU так,
+                // что интерфейс переставал отзываться на нажатия. Вернулись к
+                // градиенту с большим числом стопов — он мягкий и почти бесплатный.
+                Box(
+                    Modifier.matchParentSize().padding(4.dp)
+                        .graphicsLayer {
+                            alpha = glow.value * breathAlpha.value
+                            scaleX = breathScale.value
+                            scaleY = breathScale.value
+                        }
+                        .background(
+                            // Пять стопов вместо трёх: мягкий спад без настоящего blur,
+                            // поэтому ступенек на OLED почти не видно, а стоит дёшево.
+                            // К центру циан, к краю фиолетовый — как в макете.
+                            Brush.radialGradient(
+                                *arrayOf(
+                                    0f to Color(0x7A22D3EE),
+                                    0.30f to Color(0x5C22D3EE),
+                                    0.48f to Color(0x38A855F7),
+                                    0.66f to Color(0x18A855F7),
+                                    0.84f to Color(0x00A855F7),
+                                )
                             )
                         )
-                    )
-            )
-            // Орёл: при включении опускается сверху вниз к центру.
-            // Размер — как в утверждённом макете: там орёл занимает 30 % диаметра
-            // круга (42 px при круге 140). У нас круг 176 dp, поэтому 53 dp даёт
-            // ту же пропорцию, а не «мельче, чем в макете».
-            Image(
-                bitmap = rememberEagle(), contentDescription = null,
-                modifier = Modifier.size(53.dp).graphicsLayer {
-                    alpha = lit
-                    translationY = eagleDrop * density
-                },
-                contentScale = ContentScale.Fit,
-                filterQuality = FilterQuality.High,
-            )
-            // Выключено — знак включения вместо слова: он читается с любого
-            // расстояния и не спорит с орлом. Гаснет вместе с появлением орла.
-            if (hintAlpha > .01f) {
-                PowerIcon(
-                    tint = (if (AppTheme.p.isLight) Color(0xFF33566E) else Color(0xFF9FE6F7))
-                        .copy(alpha = .55f * hintAlpha),
-                    size = 44.dp,
                 )
+                // Неоновый орёл: тёмное тело, светлые «трубки» по контуру, слева
+                // циан, справа пурпур — как в макете. Растр: tools/make_neon.py.
+                // 110×89 dp при диске 168 dp: видимые крылья занимают ~54 % диаметра.
+                Image(
+                    bitmap = rememberEagleNeon(), contentDescription = null,
+                    modifier = Modifier.size(width = 110.dp, height = 89.dp)
+                        .graphicsLayer {
+                            alpha = lit
+                            translationY = eagleDrop * density
+                        },
+                    contentScale = ContentScale.Fit,
+                    filterQuality = FilterQuality.High,
+                )
+                // Выключено — знак включения вместо слова: он читается с любого
+                // расстояния и не спорит с орлом. Гаснет вместе с появлением орла.
+                if (hintAlpha > .01f) {
+                    PowerIcon(
+                        // Диск тёмный в любой теме, поэтому значок всегда светлый.
+                        tint = Color(0xFF9FE6F7).copy(alpha = .55f * hintAlpha),
+                        size = 44.dp,
+                    )
+                }
             }
         }
     }

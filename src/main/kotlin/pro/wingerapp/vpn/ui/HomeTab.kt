@@ -10,6 +10,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -31,11 +32,13 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
@@ -242,10 +245,10 @@ private fun Orb(on: Boolean, hint: String, onToggle: () -> Unit) {
         if (on) tween(2000, delayMillis = 500) else tween(1500),
         label = "lit",
     )
-    val markDrop by animateFloatAsState(
+    val eagleDrop by animateFloatAsState(
         if (on) 0f else -52f,
         if (on) tween(1900, delayMillis = 100) else tween(1500),
-        label = "markDrop",
+        label = "eagleDrop",
     )
     // Подпись: появляется с задержкой 1.6 с (орла уже нет), исчезает за 0.45 с.
     val hintAlpha by animateFloatAsState(
@@ -328,27 +331,18 @@ private fun Orb(on: Boolean, hint: String, onToggle: () -> Unit) {
                         )
                     )
             )
-            // Знак «W»: тяжёлая буква читается издалека, градиент тот же, что у
-            // иконки приложения — слева синий, справа фиолетовый. При включении
-            // буква опускается сверху вниз к центру.
-            Text(
-                text = "W",
-                style = TextStyle(
-                    fontFamily = WingerSans,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 92.sp,
-                    letterSpacing = 0.sp,
-                    brush = Brush.linearGradient(
-                        0.00f to Color(0xFF5CBCF5),
-                        0.34f to Color(0xFF1A5EAE),
-                        0.52f to Color(0xFF9A4FE0),
-                        0.92f to Color(0xFF5E2299),
-                    ),
-                ),
-                modifier = Modifier.graphicsLayer {
+            // Орёл: при включении опускается сверху вниз к центру.
+            // Размер — как в утверждённом макете: там орёл занимает 30 % диаметра
+            // круга (42 px при круге 140). У нас круг 176 dp, поэтому 53 dp даёт
+            // ту же пропорцию, а не «мельче, чем в макете».
+            Image(
+                bitmap = rememberEagle(), contentDescription = null,
+                modifier = Modifier.size(53.dp).graphicsLayer {
                     alpha = lit
-                    translationY = markDrop * density
+                    translationY = eagleDrop * density
                 },
+                contentScale = ContentScale.Fit,
+                filterQuality = FilterQuality.High,
             )
             // Выключено — знак включения вместо слова: он читается с любого
             // расстояния и не спорит с орлом. Гаснет вместе с появлением орла.

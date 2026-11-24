@@ -3,9 +3,12 @@ package pro.wingerapp.vpn.ui
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -253,66 +256,102 @@ private fun Orb(on: Boolean, hint: String, onToggle: () -> Unit) {
         if (on) tween(450) else tween(1200, delayMillis = 1600),
         label = "hint",
     )
-    // Кольцо как в макете: светлая «трубка» с зазором от тёмного диска.
-    // Выключено — приглушённое, включено — палево-циановое, почти белое.
-    // На светлой теме цвета чуть глубже: палево-циановое кольцо на белом фоне
-    // почти растворяется.
-    val light = AppTheme.p.isLight
-    val ring = if (light) {
-        lerp(Color(0x66324A5A), Color(0xFF7FCBDD), lit)
+    // Ободок толстый в обоих состояниях: в покое он виден как плотная «каря»
+    // (3 dp, 35% белого), при включении разгорается циановым и чуть толстеет.
+    val border = lerp(Color(0x59FFFFFF), Cyan.copy(alpha = .9f), lit)
+    val borderWidth = 3f + 1.5f * lit
+    // Ореол «дышит» в такт с градиентом названия: 3.7 с, пик на половине цикла.
+    // Держим состояние, а читаем его ВНУТРИ graphicsLayer: тогда обновление идёт
+    // в фазе отрисовки и не вызывает перекомпоновку всего экрана каждый кадр.
+    // Пока VPN выключен, анимация не создаётся вовсе — свечения всё равно не видно.
+    val breathAlpha: State<Float>
+    val breathScale: State<Float>
+    if (on) {
+        val breath = rememberInfiniteTransition(label = "breath")
+        breathAlpha = breath.animateFloat(
+            0.44f, 1f,
+            infiniteRepeatable(tween(1850, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+            label = "breathAlpha",
+        )
+        breathScale = breath.animateFloat(
+            0.92f, 1.08f,
+            infiniteRepeatable(tween(1850, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+            label = "breathScale",
+        )
     } else {
-        lerp(Color(0x5CFFFFFF), Color(0xFFA9DCE6), lit)
+        breathAlpha = remember { mutableFloatStateOf(1f) }
+        breathScale = remember { mutableFloatStateOf(1f) }
     }
+    val glow = animateFloatAsState(if (on) 1f else 0f, tween(2400), label = "glow")
 
     Box(Modifier.fillMaxWidth().height(190.dp).padding(top = 6.dp), contentAlignment = Alignment.Center) {
         Box(
             Modifier.size(176.dp)
-                .border(4.dp, ring, CircleShape)
+                .graphicsLayer {
+                    shadowElevation = (6f + 12f * lit) * density
+                    shape = CircleShape
+                    clip = true
+                }
+                .background(
+                    Brush.radialGradient(
+                        if (AppTheme.p.isLight)
+                            listOf(Color(0xFFFFFFFF), Color(0xFFF1F4F9), Color(0xFFE1E7EF))
+                        else
+                            listOf(Color(0xFF0E1B2C), Color(0xFF0A1220), Color(0xFF070C14))
+                    )
+                )
+                .border(borderWidth.dp, border, CircleShape)
                 // Подпись ушла из визуала, но осталась для скринридера.
-                // Клик — по всей кнопке: палец часто попадает в зазор мимо диска.
                 .clickable(onClickLabel = hint) { onToggle() },
             contentAlignment = Alignment.Center
         ) {
-            // Тёмный диск отступает от кольца на 4 dp — отсюда «двойной» контур
-            // из макета: светлая трубка, тёмный зазор, чёрный круг.
+            // Свечение из центра: мягкое пятно, «дышит» при включении.
+            // Раньше здесь было ещё Modifier.blur(12.dp): настоящая размывка
+            // 164-dp слоя на каждом кадре. На телефоне это загружало GPU так,
+            // что интерфейс переставал отзываться на нажатия. Вернулись к
+            // градиенту с большим числом стопов — он мягкий и почти бесплатный.
             Box(
-                Modifier.size(168.dp)
+                Modifier.matchParentSize().padding(6.dp)
                     .graphicsLayer {
-                        shadowElevation = (4f + 10f * lit) * density
-                        shape = CircleShape
-                        clip = true
+                        alpha = glow.value * breathAlpha.value
+                        scaleX = breathScale.value
+                        scaleY = breathScale.value
                     }
                     .background(
-                        // Диск тёмный в любой теме: неоновая графика требует
-                        // тёмной подложки, иначе свечение не читается.
+                        // Пять стопов вместо трёх: мягкий спад без настоящего blur,
+                        // поэтому ступенек на OLED почти не видно, а стоит дёшево.
                         Brush.radialGradient(
-                            listOf(Color(0xFF0F2530), Color(0xFF0A141C), Color(0xFF05080D))
+                            *arrayOf(
+                                0f to Color(0x8522D3EE),
+                                0.30f to Color(0x5C22D3EE),
+                                0.50f to Color(0x3D22D3EE),
+                                0.64f to Color(0x1422D3EE),
+                                0.78f to Color(0x0022D3EE),
+                            )
                         )
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                // Орёл: при включении опускается сверху вниз к центру.
-                // Размер — как в утверждённом макете: там орёл занимает 30 % диаметра
-                // круга (42 px при круге 140). У нас круг 176 dp, поэтому 53 dp даёт
-                // ту же пропорцию, а не «мельче, чем в макете».
-                Image(
-                    bitmap = rememberEagle(), contentDescription = null,
-                    modifier = Modifier.size(53.dp).graphicsLayer {
-                        alpha = lit
-                        translationY = eagleDrop * density
-                    },
-                    contentScale = ContentScale.Fit,
-                    filterQuality = FilterQuality.High,
-                )
-                // Выключено — знак включения вместо слова: он читается с любого
-                // расстояния и не спорит с орлом. Гаснет вместе с появлением орла.
-                if (hintAlpha > .01f) {
-                    PowerIcon(
-                        // Диск тёмный в любой теме, поэтому значок всегда светлый.
-                        tint = Color(0xFF9FE6F7).copy(alpha = .55f * hintAlpha),
-                        size = 44.dp,
                     )
-                }
+            )
+            // Орёл: при включении опускается сверху вниз к центру.
+            // Размер — как в утверждённом макете: там орёл занимает 30 % диаметра
+            // круга (42 px при круге 140). У нас круг 176 dp, поэтому 53 dp даёт
+            // ту же пропорцию, а не «мельче, чем в макете».
+            Image(
+                bitmap = rememberEagle(), contentDescription = null,
+                modifier = Modifier.size(53.dp).graphicsLayer {
+                    alpha = lit
+                    translationY = eagleDrop * density
+                },
+                contentScale = ContentScale.Fit,
+                filterQuality = FilterQuality.High,
+            )
+            // Выключено — знак включения вместо слова: он читается с любого
+            // расстояния и не спорит с орлом. Гаснет вместе с появлением орла.
+            if (hintAlpha > .01f) {
+                PowerIcon(
+                    tint = (if (AppTheme.p.isLight) Color(0xFF33566E) else Color(0xFF9FE6F7))
+                        .copy(alpha = .55f * hintAlpha),
+                    size = 44.dp,
+                )
             }
         }
     }

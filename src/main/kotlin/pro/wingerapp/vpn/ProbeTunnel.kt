@@ -28,6 +28,16 @@ import java.util.concurrent.TimeUnit
  */
 object ProbeTunnel {
 
+    /** Текущий служебный процесс: гасим его и при выходе из приложения. */
+    @Volatile
+    private var running: Process? = null
+
+    init {
+        Runtime.getRuntime().addShutdownHook(
+            Thread({ runCatching { running?.destroyForcibly() } }, "probe-shutdown"),
+        )
+    }
+
     suspend fun check(raw: String, servers: List<ServerNode>): Map<String, Int?> =
         withContext(Dispatchers.IO) {
             if (raw.isBlank() || servers.isEmpty()) return@withContext emptyMap()
@@ -60,6 +70,7 @@ object ProbeTunnel {
                 val process = ProcessBuilder(
                     TunnelController.coreBinary().absolutePath, "run", "-c", file.absolutePath,
                 ).directory(Platform.dataDir).redirectErrorStream(true).start()
+                running = process
                 try {
                     if (!waitApi(clashPort, 8_000)) {
                         VpnLog.add("проверка пинга: служебное ядро не поднялось")
@@ -67,6 +78,7 @@ object ProbeTunnel {
                     }
                     measure(tags, clashPort)
                 } finally {
+                    running = null
                     process.destroy()
                     if (!process.waitFor(2, TimeUnit.SECONDS)) process.destroyForcibly()
                 }

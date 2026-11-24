@@ -62,32 +62,27 @@ fun HomeScreen(
     val lastTunnelAt = remember { java.util.concurrent.atomic.AtomicLong(0L) }
     LaunchedEffect(on) { lastTunnelAt.set(System.currentTimeMillis()) }
 
-    // Пинги считаем по уже загруженному списку, без обращения к панели:
-    // при включённом туннеле — только выбранный сервер (через ядро), при
-    // выключенном — все. Раз в 5 минут обновляем, чтобы числа не застывали.
-    // Туннель мог быть поднят конфигом без outbound'ов замера (старая версия):
-    // как только подписка доступна — пересобираем конфиг, иначе пинг «нет» у всех.
+    // Туннель мог быть поднят конфигом без outbound'ов замера (остался от
+    // прошлой версии приложения): пересобираем конфиг, чтобы замер пинга
+    // вообще мог работать. Сами пинги здесь не считаем — только при открытии
+    // приложения и по кнопке, иначе числа переписывались бы «на лету».
     LaunchedEffect(st.raw.isNotBlank(), on) {
         if (on && st.raw.isNotBlank() && TunnelController.pingTagCount() == 0) {
             vm.config()?.let { connect(it, vm.rawSubscription()) }
-            // Даём ядру перезапуститься и сразу пересчитываем пинги уже по тегам.
-            kotlinx.coroutines.delay(2_500)
-            vm.clearPingCache()
-            vm.checkPings()
         }
     }
 
-    // Проверка пинга — только при открытии приложения и по кнопке.
-    // Пока она идёт, числа не показываем: иначе пользователь видит «пинг есть»
-    // у всех, а через пару секунд у мёртвых появляется n/a.
+    // Проверка пинга — один раз при открытии приложения и по кнопке. Пока идёт
+    // замер, у серверов крутится индикатор: пользователь не должен видеть
+    // «пинг есть у всех», который через пару секунд станет n/a.
     LaunchedEffect(st.servers.size) {
-        if (st.servers.isNotEmpty() && st.pings.isEmpty()) vm.checkPings()
+        if (st.servers.isNotEmpty()) vm.checkPingsOnOpen()
     }
 
     LaunchedEffect(Unit) {
         while (true) {
             delay(60 * 60 * 1000L)
-            vm.refresh(ping = false)
+            vm.refresh()
         }
     }
 
@@ -133,7 +128,7 @@ fun HomeScreen(
                 noticeSeq = st.noticeSeq,
                 trafficIntervalSec = trafficSec,
                 raw = st.raw, connect = connect, disconnect = disconnect,
-                reload = { ping -> if (ping) vm.checkPings() else vm.refresh(false) },
+                reload = { ping -> if (ping) vm.checkPings(force = true) else vm.refresh() },
                 onSelect = { name ->
                     vm.select(name)
                     vm.config(name)?.let { connect(it, vm.rawSubscription()) }

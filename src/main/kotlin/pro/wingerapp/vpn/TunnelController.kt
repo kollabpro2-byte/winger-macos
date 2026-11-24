@@ -373,6 +373,32 @@ object TunnelController {
     /** Отвечает ли Clash API ядра: до его готовности замеры бессмысленны. */
     fun coreApiAlive(): Boolean = clashAlive()
 
+    /**
+     * Готов ли API ядра именно к нашему замеру: отвечает и в списке прокси есть
+     * хотя бы один outbound замера из текущего конфига.
+     *
+     * Одного ответа API мало: при перезапуске отвечает ещё старое ядро, в
+     * конфиге которого нет тегов `ping-*`. Тогда первый же замер вернул бы
+     * отказ у всех серверов и весь список стал бы n/a.
+     */
+    fun measurementReady(): Boolean {
+        val expected = pingTags.values
+        if (expected.isEmpty()) return false
+        val live = liveProxyTags()
+        return live.isNotEmpty() && expected.any { it in live }
+    }
+
+    /** Имена прокси из `/proxies`; пусто, если API молчит или список пуст. */
+    private fun liveProxyTags(): Set<String> = runCatching {
+        (URL("http://127.0.0.1:9090/proxies").openConnection() as HttpURLConnection).run {
+            connectTimeout = 1_200
+            readTimeout = 1_200
+            val text = inputStream.bufferedReader().use { it.readText() }
+            val proxies = JSONObject(text).optJSONObject("proxies") ?: return emptySet()
+            proxies.keys().asSequence().toSet()
+        }
+    }.getOrDefault(emptySet())
+
     private fun clashAlive(): Boolean = runCatching {
         (URL("http://127.0.0.1:9090/connections").openConnection() as HttpURLConnection).run {
             connectTimeout = 1_500

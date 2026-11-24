@@ -22,8 +22,11 @@ import pro.wingerapp.vpn.net.Sub
 /** Имя узла, который выбирается автоматически после входа (v87 макета). */
 private const val AUTOPILOT_NAME = "Автопилот"
 
-/** Пауза перед замером пингов, чтобы старт не конкурировал с сетью за кадры. */
-private const val PING_SETTLE_MS = 350L
+/**
+ * Сколько ждём готовности основного ядра (Clash API + outbound'ы замера),
+ * прежде чем считать проверку пинга несостоявшейся.
+ */
+private const val MEASURE_READY_TIMEOUT_MS = 20_000L
 
 /** Сколько живёт результат замера пинга, прежде чем его пересчитают заново. */
 private const val PING_TTL_MS = 5 * 60 * 1000L
@@ -123,6 +126,17 @@ class AppViewModel {
     private val availability = HashMap<String, Pair<Long, Boolean>>()
     private val availabilityLock = Any()
 
+    /**
+     * Синхронная защита от параллельных проверок: два быстрых вызова
+     * (старт + нажатие) успевали поднять два служебных ядра, и одно падало.
+     */
+    @Volatile
+    private var pingCheckRunning = false
+
+    /** Стартовая проверка выполняется один раз за сессию приложения. */
+    @Volatile
+    private var openPingCheckStarted = false
+
     /** Кэш замеров: имя ноды → (время, мс). Живёт [PING_TTL_MS]. */
     private val pingCache = HashMap<String, Pair<Long, Int?>>()
     private val pingCacheLock = Any()
@@ -199,7 +213,7 @@ class AppViewModel {
         // не обновлялись ли мы уже в этой сессии.
         if (refreshed) return
         refreshed = true
-        refresh(ping = true)
+        refresh()
     }
 
     fun signedIn() {
@@ -293,13 +307,14 @@ class AppViewModel {
         runCatching { Api.register(user, pass, deviceId) }.getOrElse { it.message ?: "" }
     }
 
-    /** Reloads the subscription; [ping] also probes every server. */
-    fun refresh(ping: Boolean = false) {
+    /**
+     * Reloads the subscription. Пинги здесь не считаются: проверка — только при
+     * открытии приложения и по кнопке, чтобы числа не переписывались сами.
+     */
+    fun refresh() {
         if (deviceId.isBlank()) return
         scope.launch {
-            _state.update {
-                it.copy(refreshing = !ping, pings = if (ping) emptyMap() else it.pings)
-            }
+            _state.update { it.copy(refreshing = true) }
             val loaded = withContext(Dispatchers.IO) {
                 runCatching {
                     val plan = Api.subscription() ?: return@runCatching null
@@ -339,8 +354,8 @@ class AppViewModel {
                     loading = false,
                     error = null,
                     fromCache = false,
-                    notice = if (ping) it.notice else fresh,
-                    noticeSeq = if (ping) it.noticeSeq else it.noticeSeq + 1,
+                    notice = fresh,
+                    noticeSeq = it.noticeSeq + 1,
                 )
             }
             // Сохраняем успешную подписку: при следующем запуске список серверов
@@ -351,39 +366,41 @@ class AppViewModel {
                     runCatching { SubCache.save(result.plan, snapshot.raw, snapshot.selected) }
                 }
             }
-            if (ping) {
-                if (result.nodes != null) {
-                    // Проверка доступности настоящая: при включённом VPN — через
-                    // его ядро, при выключенном — через служебный туннель.
-                    delay(PING_SETTLE_MS)
-                    checkPings()
-                }
-            } else {
-                // Текст держим в состоянии, пока идёт вся анимация (3.0 с):
-                // плавность задаёт экран, а здесь важно не стереть строку
-                // раньше времени. Затем гасим — уже с нулевой прозрачностью.
-                delay(3000)
-                _state.update { if (it.notice == fresh) it.copy(notice = null) else it }
-            }
+            // Текст держим в состоянии, пока идёт вся анимация (3.0 с):
+            // плавность задаёт экран, а здесь важно не стереть строку
+            // раньше времени. Затем гасим — уже с нулевой прозрачностью.
+            delay(3000)
+            _state.update { if (it.notice == fresh) it.copy(notice = null) else it }
             _state.update { it.copy(refreshing = false) }
         }
     }
 
     /**
-     * Пересчитывает пинги по уже загруженному списку — без сети и подписки.
-     *
-     * Нужен, когда подписка не обновилась (нет сети, панель недоступна), но
-     * серверы уже есть в кэше: иначе список пингов оставался старым.
+     * Проверка при открытии приложения. За сессию — ровно одна и только когда
+     * список серверов уже есть: иначе первый же проход случился бы на пустом
+     * списке и замер не состоялся. Фоновых перепроверок нет — числа меняются
+     * только по кнопке.
      */
+    fun checkPingsOnOpen() {
+        if (openPingCheckStarted) return
+        if (_state.value.servers.isEmpty()) return
+        openPingCheckStarted = true
+        checkPings()
+    }
+
     /**
      * Проверка пинга по кнопке. Если VPN включён — меряем через его ядро,
      * если выключен — поднимаем служебный туннель без tun и меряем реальный
      * выход через каждый сервер. После этого «n/a» остаётся у мёртвых, а не
      * превращается в цифры при отключении VPN.
+     *
+     * [force] — нажатие кнопки: кэш замеров и доступности сбрасываем, иначе
+     * повторная проверка вернула бы те же числа, ничего не измерив.
      */
-    fun checkPings() {
-        // Уже идёт проверка (например, стартовая) — второй раз не запускаем.
-        if (_state.value.pinging) return
+    fun checkPings(force: Boolean = false) {
+        // Уже идёт проверка (стартовая или ручная) — второй раз не запускаем.
+        if (pingCheckRunning) return
+        pingCheckRunning = true
         val snapshot = _state.value
         if (snapshot.servers.isEmpty()) {
             // Кнопка должна реагировать даже когда список ещё не пришёл.
@@ -391,13 +408,26 @@ class AppViewModel {
             _state.update {
                 it.copy(notice = "Загружаем подписку…", noticeSeq = it.noticeSeq + 1)
             }
+            pingCheckRunning = false
             return
         }
         scope.launch {
+            if (force) {
+                synchronized(pingCacheLock) { pingCache.clear() }
+                synchronized(availabilityLock) { availability.clear() }
+            }
             _state.update { it.copy(pinging = true) }
             VpnLog.add("проверка пинга: старт")
             try {
-                if (TunnelState.running.value) {
+                if (tunnelWillBeRunning()) {
+                    // Ядро может подниматься 2–4 с, а конфиг с outbound'ами
+                    // замера появляется в момент его сборки. Пока готовности
+                    // нет, любой запрос к API вернёт отказ у всех — и список
+                    // станет полностью n/a. Лучше подождать, чем соврать.
+                    if (!waitMeasurementReady(MEASURE_READY_TIMEOUT_MS)) {
+                        VpnLog.add("проверка пинга: ядро не готово к замеру — значения не меняю")
+                        return@launch
+                    }
                     runCatching { pingAll(SubConfig(snapshot.raw, snapshot.servers)) }
                 } else {
                     val measured = runCatching {
@@ -423,6 +453,7 @@ class AppViewModel {
                     }
                 }
             } finally {
+                pingCheckRunning = false
                 _state.update { it.copy(pinging = false) }
                 VpnLog.add("проверка пинга: готово")
             }
@@ -430,6 +461,36 @@ class AppViewModel {
     }
 
     fun refreshPings() = checkPings()
+
+    /**
+     * Будет ли замер идти через основной туннель. Если VPN уже поднят — да.
+     * Если он вот-вот поднимется (автоподключение после входа в аккаунт) —
+     * ждём старта: иначе первый замер ушёл бы «мимо туннеля», а затем тот же
+     * список переписался бы в n/a, что и выглядело как обман.
+     */
+    private suspend fun tunnelWillBeRunning(): Boolean {
+        if (TunnelState.running.value || Store.running()) return true
+        val budget = if (_state.value.autoConnect) 6_000L else 800L
+        val deadline = System.currentTimeMillis() + budget
+        while (System.currentTimeMillis() < deadline) {
+            delay(150)
+            if (TunnelState.running.value || Store.running()) return true
+        }
+        return false
+    }
+
+    /**
+     * Готов ли основной туннель к замеру: API ядра отвечает и в его списке
+     * прокси есть outbound'ы замера из текущего конфига.
+     */
+    private suspend fun waitMeasurementReady(timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (TunnelController.measurementReady()) return true
+            delay(300)
+        }
+        return false
+    }
 
     private suspend fun pingAll(parsed: SubConfig) {
         // Туннель включён: прямой TCP-пинг врёт (~1 мс, рукопожатие завершает
